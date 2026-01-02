@@ -485,7 +485,7 @@ export const GithubRunCommand = cmd({
         : context.eventName === "issue_comment" || context.eventName === "issues"
           ? (payload as IssueCommentEvent | IssuesEvent).issue.number
           : (payload as PullRequestEvent | PullRequestReviewCommentEvent).pull_request.number
-      const runUrl = `/ ${owner} / ${repo} / actions / runs / ${runId}`
+      const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${runId}`
       const shareBaseUrl = isMock ? "https://dev.opencode.ai" : "https://opencode.ai"
 
       let appToken: string
@@ -849,35 +849,46 @@ Reply with \`/oc\` followed by your answers (e.g., "/oc 1. Yes 2. Models only"),
 
 User's context: ${userMessage || "Fixed previous issues"}
 
-INSTRUCTIONS:
-1. You should check if the previous issues have been resolved
-2. Compare the current diff against previous feedback
-3. Mark resolved issues and any remaining issues
+CRITICAL: Output ONLY valid JSON. NO explanations. NO text before or after JSON.
 
-Output your review as structured JSON:
 \`\`\`json
 {
-  "context_summary": "Re-review after fixing: [what was fixed]",
-  "summary": "Status of previous feedback resolution",
+  "context_summary": "Re-review: [brief context of what was fixed]",
+  "summary": "1-2 sentence status of previous feedback resolution",
   
   "checklist": [
     {
-      "item": "Previous issue: [issue name]",
+      "item": "Previous issue name",
       "passed": true,
-      "note": "✅ Resolved in commit xyz" 
+      "note": "✅ Resolved / ❌ Still open - brief explanation"
     }
   ],
   
-  "comments": [],
+  "comments": [
+    {
+      "path": "src/path/to/file.js",
+      "line": 42,
+      "body": "Issue still present: description",
+      "severity": "error|warning|info|suggestion"
+    }
+  ],
   
   "not_reviewed": [
-    {"item": "Items from previous review", "reason": "Already addressed"}
+    {"item": "Item name", "reason": "Already addressed / Not in scope"}
   ],
   
   "decision": "APPROVE|REQUEST_CHANGES",
-  "decision_reason": "All previous issues resolved / Some issues remain"
+  "decision_reason": "All issues resolved / X issues remain"
 }
-\`\`\``
+\`\`\`
+
+RULES:
+- Output ONLY the JSON block, nothing else
+- Use "path" not "file" for file paths
+- Use "body" not "note" for comment text
+- Use "severity" for each comment (error/warning/info/suggestion)
+- If no inline comments needed, use empty array: "comments": []
+- Checklist items should track resolution of PREVIOUS issues`
             }
 
             // Check for direct review trigger first (/oc! anywhere in text)
@@ -887,7 +898,7 @@ Output your review as structured JSON:
               return `[DIRECT_REVIEW] Review this pull request directly without asking clarifying questions.
 User context: ${userMessage || "None provided"}
 
-IMPORTANT: Output your review as structured JSON with a DYNAMIC checklist based on PR type:
+CRITICAL: Output ONLY valid JSON. NO explanations. NO text before or after JSON.
 
 \`\`\`json
 {
@@ -967,7 +978,7 @@ Keep your response focused on this specific issue only. Do NOT ask Phase 1 quest
 User's context/answers:
 ${userMessage}
 
-IMPORTANT: Output your review as structured JSON with a DYNAMIC checklist based on PR type:
+CRITICAL: Output ONLY valid JSON. NO explanations. NO text before or after JSON.
 
 \`\`\`json
 {
