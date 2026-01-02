@@ -27,6 +27,7 @@ import { Bus } from "../../bus"
 import { MessageV2 } from "../../session/message-v2"
 import { SessionPrompt } from "@/session/prompt"
 import { $ } from "bun"
+import { ContextInjector, ReviewComment } from "../../context"
 
 type GitHubAuthor = {
   login: string
@@ -185,7 +186,7 @@ export const GithubCommand = cmd({
   command: "github",
   describe: "manage GitHub agent",
   builder: (yargs) => yargs.command(GithubInstallCommand).command(GithubRunCommand).demandCommand(),
-  async handler() {},
+  async handler() { },
 })
 
 export const GithubInstallCommand = cmd({
@@ -234,9 +235,14 @@ export const GithubInstallCommand = cmd({
                 `    1. Commit the \`${WORKFLOW_FILE}\` file and push`,
                 step2,
                 "",
-                "    3. Go to a GitHub issue and comment `/oc summarize` to see the agent in action",
+                "    3. Ensure your self-hosted runner has:",
+                "       - Bun installed (https://bun.sh)",
+                "       - Git installed",
+                "       - Network access to github.com",
                 "",
-                "   Learn more about the GitHub agent - https://opencode.ai/docs/github/#usage-examples",
+                "    4. Go to a GitHub issue or PR and comment `/oc` to see the agent in action",
+                "",
+                "   Note: This workflow uses rakamindev/opencode fork with self-hosted runners",
               ].join("\n"),
             )
           }
@@ -363,10 +369,9 @@ export const GithubInstallCommand = cmd({
           }
 
           async function addWorkflowFiles() {
-            const envStr =
-              provider === "amazon-bedrock"
-                ? ""
-                : `\n        env:${providers[provider].env.map((e) => `\n          ${e}: \${{ secrets.${e} }}`).join("")}`
+            const envSecrets = providers[provider].env
+              .map((e) => `          ${e}: \${{ secrets.${e} }}`)
+              .join("\n")
 
             await Bun.write(
               path.join(app.root, WORKFLOW_FILE),
@@ -385,20 +390,35 @@ jobs:
       startsWith(github.event.comment.body, '/oc') ||
       contains(github.event.comment.body, ' /opencode') ||
       startsWith(github.event.comment.body, '/opencode')
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     permissions:
       id-token: write
       contents: read
-      pull-requests: read
-      issues: read
+      pull-requests: write
+      issues: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Clone opencode
+        run: |
+          rm -rf /tmp/opencode
+          git clone --depth 1 https://github.com/rakamindev/opencode.git /tmp/opencode
+
+      - name: Install dependencies
+        working-directory: /tmp/opencode
+        run: bun install
+
       - name: Run opencode
-        uses: sst/opencode/github@latest${envStr}
-        with:
-          model: ${provider}/${model}`,
+        working-directory: \${{ github.workspace }}
+        env:
+          GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+          GITHUB_EVENT_NAME: \${{ github.event_name }}
+          GITHUB_EVENT_PATH: \${{ github.event_path }}
+          OPENCODE_MODEL: ${provider}/${model}
+${envSecrets}
+        run: bun run /tmp/opencode/packages/opencode/src/cli/index.ts github run
+`,
             )
 
             prompts.log.success(`Added workflow file: "${WORKFLOW_FILE}"`)
@@ -464,7 +484,7 @@ export const GithubRunCommand = cmd({
         : context.eventName === "issue_comment" || context.eventName === "issues"
           ? (payload as IssueCommentEvent | IssuesEvent).issue.number
           : (payload as PullRequestEvent | PullRequestReviewCommentEvent).pull_request.number
-      const runUrl = `/${owner}/${repo}/actions/runs/${runId}`
+      const runUrl = `/ ${owner} / ${repo} / actions / runs / ${runId}`
       const shareBaseUrl = isMock ? "https://dev.opencode.ai" : "https://opencode.ai"
 
       let appToken: string
@@ -536,7 +556,7 @@ export const GithubRunCommand = cmd({
           }
           const branchPrefix = isWorkflowDispatchEvent ? "dispatch" : "schedule"
           const branch = await checkoutNewBranch(branchPrefix)
-          const head = (await $`git rev-parse HEAD`).stdout.toString().trim()
+          const head = (await $`git rev - parse HEAD`).stdout.toString().trim()
           const response = await chat(userPrompt, promptFiles)
           const { dirty, uncommittedChanges } = await branchIsDirty(head)
           if (dirty) {
@@ -562,38 +582,48 @@ export const GithubRunCommand = cmd({
           // Local PR
           if (prData.headRepository.nameWithOwner === prData.baseRepository.nameWithOwner) {
             await checkoutLocalBranch(prData)
-            const head = (await $`git rev-parse HEAD`).stdout.toString().trim()
-            const dataPrompt = buildPromptDataForPR(prData)
+            const head = (await $`git rev - parse HEAD`).stdout.toString().trim()
+            const dataPrompt = await buildPromptDataForPR(prData)
             const response = await chat(`${userPrompt}\n\n${dataPrompt}`, promptFiles)
             const { dirty, uncommittedChanges } = await branchIsDirty(head)
             if (dirty) {
               const summary = await summarize(response)
               await pushToLocalBranch(summary, uncommittedChanges)
             }
-            const hasShared = prData.comments.nodes.some((c) => c.body.includes(`${shareBaseUrl}/s/${shareId}`))
-            await createComment(`${response}${footer({ image: !hasShared })}`)
+            const hasShared = prData.comments.nodes.some((c) => c.body.includes(`${shareBaseUrl} / s / ${shareId}`))
+            // Try to post inline review comments, fall back to regular comment
+            await parseAndPostInlineReview(
+              issueId!,
+              response,
+              footer({ image: !hasShared })
+            )
             await removeReaction(commentType)
           }
           // Fork PR
           else {
             await checkoutForkBranch(prData)
-            const head = (await $`git rev-parse HEAD`).stdout.toString().trim()
-            const dataPrompt = buildPromptDataForPR(prData)
+            const head = (await $`git rev - parse HEAD`).stdout.toString().trim()
+            const dataPrompt = await buildPromptDataForPR(prData)
             const response = await chat(`${userPrompt}\n\n${dataPrompt}`, promptFiles)
             const { dirty, uncommittedChanges } = await branchIsDirty(head)
             if (dirty) {
               const summary = await summarize(response)
               await pushToForkBranch(summary, prData, uncommittedChanges)
             }
-            const hasShared = prData.comments.nodes.some((c) => c.body.includes(`${shareBaseUrl}/s/${shareId}`))
-            await createComment(`${response}${footer({ image: !hasShared })}`)
+            const hasShared = prData.comments.nodes.some((c) => c.body.includes(`${shareBaseUrl} / s / ${shareId}`))
+            // Try to post inline review comments, fall back to regular comment
+            await parseAndPostInlineReview(
+              issueId!,
+              response,
+              footer({ image: !hasShared })
+            )
             await removeReaction(commentType)
           }
         }
         // Issue
         else {
           const branch = await checkoutNewBranch("issue")
-          const head = (await $`git rev-parse HEAD`).stdout.toString().trim()
+          const head = (await $`git rev - parse HEAD`).stdout.toString().trim()
           const issueData = await fetchIssue()
           const dataPrompt = buildPromptDataForIssue(issueData)
           const response = await chat(`${userPrompt}\n\n${dataPrompt}`, promptFiles)
@@ -645,7 +675,7 @@ export const GithubRunCommand = cmd({
         const { providerID, modelID } = Provider.parseModel(value)
 
         if (!providerID.length || !modelID.length)
-          throw new Error(`Invalid model ${value}. Model must be in the format "provider/model".`)
+          throw new Error(`Invalid model ${value}.Model must be in the format "provider/model".`)
         return { providerID, modelID }
       }
 
@@ -660,7 +690,7 @@ export const GithubRunCommand = cmd({
         if (!value) return undefined
         if (value === "true") return true
         if (value === "false") return false
-        throw new Error(`Invalid share value: ${value}. Share must be a boolean.`)
+        throw new Error(`Invalid share value: ${value}.Share must be a boolean.`)
       }
 
       function normalizeUseGithubToken() {
@@ -668,7 +698,7 @@ export const GithubRunCommand = cmd({
         if (!value) return false
         if (value === "true") return true
         if (value === "false") return false
-        throw new Error(`Invalid use_github_token value: ${value}. Must be a boolean.`)
+        throw new Error(`Invalid use_github_token value: ${value}.Must be a boolean.`)
       }
 
       function normalizeOidcBaseUrl(): string {
@@ -734,13 +764,13 @@ export const GithubRunCommand = cmd({
           const bodyLower = body.toLowerCase()
           if (mentions.some((m) => bodyLower === m)) {
             if (reviewContext) {
-              return `Review this code change and suggest improvements for the commented lines:\n\nFile: ${reviewContext.file}\nLines: ${reviewContext.line}\n\n${reviewContext.diffHunk}`
+              return `Review this code change and suggest improvements for the commented lines: \n\nFile: ${reviewContext.file} \nLines: ${reviewContext.line} \n\n${reviewContext.diffHunk} `
             }
             return "Summarize this thread"
           }
           if (mentions.some((m) => bodyLower.includes(m))) {
             if (reviewContext) {
-              return `${body}\n\nContext: You are reviewing a comment on file "${reviewContext.file}" at line ${reviewContext.line}.\n\nDiff context:\n${reviewContext.diffHunk}`
+              return `${body} \n\nContext: You are reviewing a comment on file "${reviewContext.file}" at line ${reviewContext.line}.\n\nDiff context: \n${reviewContext.diffHunk}`
             }
             return body
           }
@@ -819,7 +849,7 @@ export const GithubRunCommand = cmd({
 
         function printEvent(color: string, type: string, title: string) {
           UI.println(
-            color + `|`,
+            color + `| `,
             UI.Style.TEXT_NORMAL + UI.Style.TEXT_DIM + ` ${type.padEnd(7, " ")}`,
             "",
             UI.Style.TEXT_NORMAL + title,
@@ -858,7 +888,7 @@ export const GithubRunCommand = cmd({
 
       async function summarize(response: string) {
         try {
-          return await chat(`Summarize the following in less than 40 characters:\n\n${response}`)
+          return await chat(`Summarize the following in less than 40 characters: \n\n${response}`)
         } catch (e) {
           const title = issueEvent
             ? issueEvent.issue.title
@@ -889,7 +919,7 @@ export const GithubRunCommand = cmd({
                 id: Identifier.ascending("part"),
                 type: "file" as const,
                 mime: f.mime,
-                url: `data:${f.mime};base64,${f.content}`,
+                url: `data: ${f.mime}; base64, ${f.content} `,
                 filename: f.filename,
                 source: {
                   type: "file" as const,
@@ -909,7 +939,7 @@ export const GithubRunCommand = cmd({
         if (result.info.role === "assistant" && result.info.error) {
           console.error(result.info)
           throw new Error(
-            `${result.info.error.name}: ${"message" in result.info.error ? result.info.error.message : ""}`,
+            `${result.info.error.name}: ${"message" in result.info.error ? result.info.error.message : ""} `,
           )
         }
 
@@ -938,7 +968,7 @@ export const GithubRunCommand = cmd({
         if (summary.info.role === "assistant" && summary.info.error) {
           console.error(summary.info)
           throw new Error(
-            `${summary.info.error.name}: ${"message" in summary.info.error ? summary.info.error.message : ""}`,
+            `${summary.info.error.name}: ${"message" in summary.info.error ? summary.info.error.message : ""} `,
           )
         }
 
@@ -956,7 +986,7 @@ export const GithubRunCommand = cmd({
         } catch (error) {
           console.error("Failed to get OIDC token:", error)
           throw new Error(
-            "Could not fetch an OIDC token. Make sure to add `id-token: write` to your workflow permissions.",
+            "Could not fetch an OIDC token. Make sure to add `id - token: write` to your workflow permissions.",
           )
         }
       }
@@ -964,18 +994,18 @@ export const GithubRunCommand = cmd({
       async function exchangeForAppToken(token: string) {
         const response = token.startsWith("github_pat_")
           ? await fetch(`${oidcBaseUrl}/exchange_github_app_token_with_pat`, {
-              method: "POST",
-              headers: {
-                Authorization: `Bearer ${token}`,
-              },
-              body: JSON.stringify({ owner, repo }),
-            })
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({ owner, repo }),
+          })
           : await fetch(`${oidcBaseUrl}/exchange_github_app_token`, {
-              method: "POST",
-              headers: {
-                Authorization: `Bearer ${token}`,
-              },
-            })
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          })
 
         if (!response.ok) {
           const responseJson = (await response.json()) as { error?: string }
@@ -1223,10 +1253,30 @@ Co-authored-by: ${actor} <${actor}@users.noreply.github.com>"`
       async function createComment(body: string) {
         // Only called for non-schedule events, so issueId is defined
         console.log("Creating comment...")
+
+        // If this is a reply to a review comment, use threaded reply
+        if (commentType === "pr_review" && triggerCommentId) {
+          return await createReviewCommentReply(body)
+        }
+
         return await octoRest.rest.issues.createComment({
           owner,
           repo,
           issue_number: issueId!,
+          body,
+        })
+      }
+
+      /**
+       * Reply to a specific review comment thread
+       */
+      async function createReviewCommentReply(body: string) {
+        console.log(`Replying to review comment ${triggerCommentId}...`)
+        return await octoRest.rest.pulls.createReplyForReviewComment({
+          owner,
+          repo,
+          pull_number: issueId!, // For PR events, issueId is the PR number
+          comment_id: triggerCommentId!,
           body,
         })
       }
@@ -1242,6 +1292,122 @@ Co-authored-by: ${actor} <${actor}@users.noreply.github.com>"`
           body,
         })
         return pr.data.number
+      }
+
+      /**
+       * Create a pull request review with inline comments on specific lines
+       */
+      async function createPullRequestReview(
+        prNumber: number,
+        summary: string,
+        comments: Array<{
+          path: string
+          line: number
+          start_line?: number
+          side?: "LEFT" | "RIGHT"
+          body: string
+        }>
+      ) {
+        console.log(`Creating PR review with ${comments.length} inline comments...`)
+
+        // GitHub requires commit_id for review comments
+        const { data: pr } = await octoRest.rest.pulls.get({
+          owner,
+          repo,
+          pull_number: prNumber,
+        })
+        const commitId = pr.head.sha
+
+        try {
+          await octoRest.rest.pulls.createReview({
+            owner,
+            repo,
+            pull_number: prNumber,
+            commit_id: commitId,
+            event: "COMMENT",
+            body: summary,
+            comments: comments.map((c) => ({
+              path: c.path,
+              line: c.line,
+              ...(c.start_line ? { start_line: c.start_line } : {}),
+              side: c.side || "RIGHT",
+              body: c.body,
+            })),
+          })
+          console.log(`Review created with ${comments.length} inline comments`)
+        } catch (error: any) {
+          // If inline comments fail, fall back to regular comment
+          console.warn("Failed to create inline review, falling back to regular comment:", error.message)
+          await createComment(`${summary}\n\n---\n\n_Note: Could not post inline comments. Showing feedback here instead._\n\n${comments.map((c) => `**${c.path}:${c.line}**\n${c.body}`).join("\n\n")}`)
+        }
+      }
+
+      /**
+       * Parse LLM response for structured review output and post inline comments.
+       * Returns true if inline review was posted, false if it fell back to regular comment.
+       */
+      async function parseAndPostInlineReview(
+        prNumber: number,
+        response: string,
+        fallbackFooter: string
+      ): Promise<boolean> {
+        // Try to find JSON in the response
+        const jsonMatch = response.match(/```json\s*([\s\S]*?)\s*```/) ||
+          response.match(/\{[\s\S]*"summary"[\s\S]*"comments"[\s\S]*\}/)
+
+        if (!jsonMatch) {
+          console.log("No structured JSON found in response, using regular comment")
+          await createComment(`${response}${fallbackFooter}`)
+          return false
+        }
+
+        try {
+          const jsonStr = jsonMatch[1] || jsonMatch[0]
+          const parsed = JSON.parse(jsonStr)
+
+          // Validate with our schema
+          const result = ReviewComment.ReviewOutput.safeParse(parsed)
+
+          if (!result.success) {
+            console.warn("Invalid review output structure:", result.error.issues)
+            await createComment(`${response}${fallbackFooter}`)
+            return false
+          }
+
+          const reviewData = result.data
+
+          // Format comments for GitHub API
+          const formattedComments = reviewData.comments.map((comment) =>
+            ReviewComment.formatForGitHub(comment)
+          )
+
+          if (formattedComments.length > 0) {
+            // Build summary with general observations
+            let fullSummary = reviewData.summary
+            if (reviewData.general_observations && reviewData.general_observations.length > 0) {
+              fullSummary += "\n\n**General Observations:**\n" +
+                reviewData.general_observations.map((obs) => `- ${obs}`).join("\n")
+            }
+            fullSummary += fallbackFooter
+
+            await createPullRequestReview(prNumber, fullSummary, formattedComments)
+            console.log(`Posted inline review with ${formattedComments.length} comments`)
+            return true
+          } else {
+            // No inline comments, just post summary
+            let fullSummary = reviewData.summary
+            if (reviewData.general_observations && reviewData.general_observations.length > 0) {
+              fullSummary += "\n\n**General Observations:**\n" +
+                reviewData.general_observations.map((obs) => `- ${obs}`).join("\n")
+            }
+            await createComment(`${fullSummary}${fallbackFooter}`)
+            return false
+          }
+        } catch (e: any) {
+          console.warn("Failed to parse structured review:", e.message)
+          await createComment(`${response}${fallbackFooter}`)
+          return false
+        }
       }
 
       function footer(opts?: { image?: boolean }) {
@@ -1431,7 +1597,7 @@ query($owner: String!, $repo: String!, $number: Int!) {
         return pr
       }
 
-      function buildPromptDataForPR(pr: GitHubPullRequest) {
+      async function buildPromptDataForPR(pr: GitHubPullRequest) {
         // Only called for non-schedule events, so payload is defined
         const comments = (pr.comments?.nodes || [])
           .filter((c) => {
@@ -1449,6 +1615,15 @@ query($owner: String!, $repo: String!, $number: Int!) {
             ...(comments.length > 0 ? ["  - Comments:", ...comments] : []),
           ]
         })
+
+        // Inject context from repository based on changed files
+        const changedFilePaths = (pr.files.nodes || []).map((f) => f.path)
+        const contextResult = await ContextInjector.inject(changedFilePaths)
+        const contextPrompt = ContextInjector.buildPrompt(contextResult)
+
+        if (contextResult.matchedRules.length > 0) {
+          console.log(`Context injection: ${contextResult.summary}`)
+        }
 
         return [
           "<github_action_context>",
@@ -1476,6 +1651,9 @@ query($owner: String!, $repo: String!, $number: Int!) {
           ...(files.length > 0 ? ["<pull_request_changed_files>", ...files, "</pull_request_changed_files>"] : []),
           ...(reviewData.length > 0 ? ["<pull_request_reviews>", ...reviewData, "</pull_request_reviews>"] : []),
           "</pull_request>",
+          "",
+          // Inject repository context based on changed files
+          ...(contextPrompt ? [contextPrompt] : []),
         ].join("\n")
       }
 
