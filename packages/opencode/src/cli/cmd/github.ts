@@ -734,6 +734,8 @@ export const GithubRunCommand = cmd({
           position: reviewPayload.comment.position,
           commitId: reviewPayload.comment.commit_id,
           originalCommitId: reviewPayload.comment.original_commit_id,
+          // Thread detection: if in_reply_to_id exists, this is a reply in a thread
+          inReplyToId: (reviewPayload.comment as any).in_reply_to_id as number | undefined,
         }
       }
 
@@ -817,6 +819,28 @@ IMPORTANT: Output your review as structured JSON for inline comments:
 
             const userMessage = body.replace(/\/oc!?|\/opencode!?/gi, "").trim()
             const hasNumberedAnswers = /^\s*\d+[\.\)]\s*.+/m.test(userMessage)
+
+            // SMART THREAD DETECTION:
+            // If this is a threaded reply (in_reply_to_id exists), skip Phase 1
+            // and go directly to Phase 2 with focused context
+            const isThreadedReply = reviewContext?.inReplyToId !== undefined
+
+            if (isThreadedReply) {
+              // Threaded reply → Skip Phase 1, use thread context for focused response
+              return `[THREAD_REPLY] User is replying in a code review thread. Provide a focused response based on the thread context.
+
+User's reply: ${userMessage || "Acknowledged"}
+
+Thread context:
+- File: ${reviewContext?.file}
+- Line: ${reviewContext?.line}
+- Diff:
+${reviewContext?.diffHunk}
+
+Respond directly to the user's message. If they've acknowledged a fix, confirm and close the thread. If they have questions, answer concisely. If they disagree, discuss the trade-offs.
+
+Keep your response focused on this specific issue only. Do NOT ask Phase 1 questions.`
+            }
 
             if (hasNumberedAnswers) {
               // User is answering questions → Phase 2
