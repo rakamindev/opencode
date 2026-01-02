@@ -798,12 +798,23 @@ Reply with \`/oc\` followed by your answers (e.g., "/oc 1. Yes 2. Models only"),
             const isDirectReview = mentions.some((m) => bodyLower.includes(m + "!"))
             if (isDirectReview) {
               const userMessage = body.replace(/\/oc!?|\/opencode!?/gi, "").trim()
-              return `[DIRECT_REVIEW] Review this pull request directly without asking clarifying questions. User context: ${userMessage || "None provided"}
+              return `[DIRECT_REVIEW] Review this pull request directly without asking clarifying questions.
+User context: ${userMessage || "None provided"}
 
-IMPORTANT: Output your review as structured JSON for inline comments:
+IMPORTANT: Output your review as structured JSON with a DYNAMIC checklist based on PR type:
+
 \`\`\`json
 {
-  "summary": "Brief overall summary (1-2 sentences)",
+  "summary": "1-2 sentence summary of what this PR does",
+  
+  "checklist": [
+    {
+      "item": "Criterion name (generate based on PR type - models, migrations, services, etc.)",
+      "passed": true,
+      "note": "Why it passed/failed - be specific"
+    }
+  ],
+  
   "comments": [
     {
       "path": "src/path/to/file.js",
@@ -812,9 +823,21 @@ IMPORTANT: Output your review as structured JSON for inline comments:
       "severity": "error|warning|info|suggestion"
     }
   ],
-  "general_observations": ["Any observations not tied to specific lines"]
+  
+  "general_observations": ["Any observations not tied to specific lines"],
+  
+  "decision": "APPROVE|REQUEST_CHANGES",
+  "decision_reason": "Why this decision"
 }
-\`\`\``
+\`\`\`
+
+CHECKLIST GENERATION RULES:
+- Generate 4-7 checklist items RELEVANT to this specific PR type
+- If PR adds models: check schema correctness, associations, naming conventions
+- If PR adds migrations: check column types, indexes, rollback safety
+- If PR adds services: check business logic separation, error handling
+- If PR adds controllers: check input validation, output formatting
+- Be CONTEXT-AWARE, not generic`
             }
 
             const userMessage = body.replace(/\/oc!?|\/opencode!?/gi, "").trim()
@@ -844,15 +867,25 @@ Keep your response focused on this specific issue only. Do NOT ask Phase 1 quest
 
             if (hasNumberedAnswers) {
               // User is answering questions → Phase 2
-              return `[PHASE_2] User has answered your clarifying questions. Now provide the focused review based on their answers:
+              return `[PHASE_2] User has answered your clarifying questions. Now provide the focused review based on their answers.
 
 User's answers:
 ${userMessage}
 
-IMPORTANT: Output your review as structured JSON for inline comments:
+IMPORTANT: Output your review as structured JSON with a DYNAMIC checklist based on PR type:
+
 \`\`\`json
 {
-  "summary": "Brief overall summary (1-2 sentences)",
+  "summary": "1-2 sentence summary of what this PR does",
+  
+  "checklist": [
+    {
+      "item": "Criterion name (generate based on PR type - models, migrations, services, etc.)",
+      "passed": true,
+      "note": "Why it passed/failed - be specific"
+    }
+  ],
+  
   "comments": [
     {
       "path": "src/path/to/file.js",
@@ -861,9 +894,22 @@ IMPORTANT: Output your review as structured JSON for inline comments:
       "severity": "error|warning|info|suggestion"
     }
   ],
-  "general_observations": ["Any observations not tied to specific lines"]
+  
+  "general_observations": ["Any observations not tied to specific lines"],
+  
+  "decision": "APPROVE|REQUEST_CHANGES",
+  "decision_reason": "Why this decision"
 }
-\`\`\``
+\`\`\`
+
+CHECKLIST GENERATION RULES:
+- Generate 4-7 checklist items RELEVANT to this specific PR type
+- If PR adds models: check schema correctness, associations, naming conventions
+- If PR adds migrations: check column types, indexes, rollback safety
+- If PR adds services: check business logic separation, error handling
+- If PR adds controllers: check input validation, output formatting
+- Be CONTEXT-AWARE based on user's answers, not generic
+- Mark items NOT reviewed (per user context) as "skipped" with reason`
             }
 
             // /oc or /oc <text> without numbered answers → Phase 1
@@ -1489,31 +1535,74 @@ Co-authored-by: ${actor} <${actor}@users.noreply.github.com>"`
 
           const reviewData = result.data
 
+          // Build comprehensive review body
+          const reviewParts: string[] = []
+
+          // Header
+          reviewParts.push("## 🤖 AI Code Review")
+          reviewParts.push("")
+
+          // Summary
+          reviewParts.push(`> ${reviewData.summary}`)
+          reviewParts.push("")
+          reviewParts.push("---")
+          reviewParts.push("")
+
+          // Checklist table (if present)
+          if (reviewData.checklist && reviewData.checklist.length > 0) {
+            reviewParts.push("### ✅ Review Checklist")
+            reviewParts.push("")
+            reviewParts.push("| # | Criterion | Status | Note |")
+            reviewParts.push("|---|-----------|--------|------|")
+            reviewData.checklist.forEach((item, index) => {
+              const status = item.passed === true ? "✅ Pass" :
+                item.passed === false ? "❌ Fail" :
+                  "⏭️ Skipped"
+              reviewParts.push(`| ${index + 1} | ${item.item} | ${status} | ${item.note} |`)
+            })
+            reviewParts.push("")
+            reviewParts.push("---")
+            reviewParts.push("")
+          }
+
+          // General observations
+          if (reviewData.general_observations && reviewData.general_observations.length > 0) {
+            reviewParts.push("### 📝 General Observations")
+            reviewParts.push("")
+            reviewData.general_observations.forEach((obs) => {
+              reviewParts.push(`- ${obs}`)
+            })
+            reviewParts.push("")
+            reviewParts.push("---")
+            reviewParts.push("")
+          }
+
+          // Decision (if present)
+          if (reviewData.decision) {
+            const decisionEmoji = reviewData.decision === "APPROVE" ? "✅" :
+              reviewData.decision === "REQUEST_CHANGES" ? "🔄" : "💬"
+            reviewParts.push(`### 🎯 Decision: **${reviewData.decision}** ${decisionEmoji}`)
+            reviewParts.push("")
+            if (reviewData.decision_reason) {
+              reviewParts.push(`**Reason:** ${reviewData.decision_reason}`)
+              reviewParts.push("")
+            }
+          }
+
+          const fullSummary = reviewParts.join("\n") + fallbackFooter
+
           // Format comments for GitHub API
           const formattedComments = reviewData.comments.map((comment) =>
             ReviewComment.formatForGitHub(comment)
           )
 
           if (formattedComments.length > 0) {
-            // Build summary with general observations
-            let fullSummary = reviewData.summary
-            if (reviewData.general_observations && reviewData.general_observations.length > 0) {
-              fullSummary += "\n\n**General Observations:**\n" +
-                reviewData.general_observations.map((obs) => `- ${obs}`).join("\n")
-            }
-            fullSummary += fallbackFooter
-
             await createPullRequestReview(prNumber, fullSummary, formattedComments)
             console.log(`Posted inline review with ${formattedComments.length} comments`)
             return true
           } else {
             // No inline comments, just post summary
-            let fullSummary = reviewData.summary
-            if (reviewData.general_observations && reviewData.general_observations.length > 0) {
-              fullSummary += "\n\n**General Observations:**\n" +
-                reviewData.general_observations.map((obs) => `- ${obs}`).join("\n")
-            }
-            await createComment(`${fullSummary}${fallbackFooter}`)
+            await createComment(fullSummary)
             return false
           }
         } catch (e: any) {
