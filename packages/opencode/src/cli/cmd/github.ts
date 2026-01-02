@@ -177,9 +177,10 @@ export function extractResponseText(parts: MessageV2.Part[]): string | null {
   const toolParts = parts.filter((p) => p.type === "tool" && p.state.status === "completed")
   if (toolParts.length > 0) return null
 
-  // No usable parts - throw with debug info
-  const partTypes = parts.map((p) => p.type).join(", ") || "none"
-  throw new Error(`Failed to parse response. Part types found: [${partTypes}]`)
+  // Priority 4: Step parts or other unknown parts
+  // When Gemini 2.0 uses tools or thinks, it may emit step-start/step-finish or other types.
+  // We return null to signal summary needed if there is no text.
+  return null
 }
 
 export const GithubCommand = cmd({
