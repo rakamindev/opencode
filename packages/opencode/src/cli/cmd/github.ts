@@ -762,19 +762,50 @@ export const GithubRunCommand = cmd({
           }
           const body = (payload as IssueCommentEvent | PullRequestReviewCommentEvent).comment.body.trim()
           const bodyLower = body.toLowerCase()
-          if (mentions.some((m) => bodyLower === m)) {
-            if (reviewContext) {
-              return `Review this code change and suggest improvements for the commented lines: \n\nFile: ${reviewContext.file} \nLines: ${reviewContext.line} \n\n${reviewContext.diffHunk} `
+          if (mentions.some((m) => bodyLower === m) || mentions.some((m) => bodyLower === m + "!")) {
+            // Check for direct review trigger (/oc! or /opencode!)
+            const isDirectReview = mentions.some((m) => bodyLower === m + "!" || bodyLower.startsWith(m + "!"))
+
+            if (isDirectReview) {
+              // /oc! → Skip Phase 1, go directly to focused review
+              return `[DIRECT_REVIEW] Review this pull request directly without asking clarifying questions. Provide your complete review now.`
             }
-            return "Summarize this thread"
+
+            // /oc → Phase 1: Ask clarifying questions first
+            return `[PHASE_1] Before reviewing this pull request, analyze the changes and ask 2-4 clarifying questions to understand the context and focus areas. DO NOT provide the actual review yet - just ask focused questions. Example format:
+
+🤔 **Before I review, a few questions:**
+
+**PR Type Detected:** [Type based on files changed]
+
+**I noticed:**
+- [Observation about what's in the PR]
+- [Observation about what seems missing]
+
+**Questions:**
+1. [Context question]
+2. [Focus question]
+
+Reply with \`/oc\` followed by your answers (e.g., "/oc 1. Yes 2. Models only"), or use \`/oc!\` to skip questions.`
           }
+
+          // Handle /oc with additional text (user answering questions or providing context)
           if (mentions.some((m) => bodyLower.includes(m))) {
+            const userMessage = body.replace(/\/oc!?|\/opencode!?/gi, "").trim()
+            const hasNumberedAnswers = /^\s*\d+[\.\)]\s*.+/m.test(userMessage)
+
+            if (hasNumberedAnswers) {
+              // User is answering questions → Phase 2
+              return `[PHASE_2] User has answered your clarifying questions. Now provide the focused review based on their answers:\n\nUser's answers:\n${userMessage}`
+            }
+
+            // User provided context with /oc → treat as additional context
             if (reviewContext) {
-              return `${body} \n\nContext: You are reviewing a comment on file "${reviewContext.file}" at line ${reviewContext.line}.\n\nDiff context: \n${reviewContext.diffHunk}`
+              return `${body}\n\nContext: You are reviewing a comment on file "${reviewContext.file}" at line ${reviewContext.line}.\n\nDiff context:\n${reviewContext.diffHunk}`
             }
             return body
           }
-          throw new Error(`Comments must mention ${mentions.map((m) => "`" + m + "`").join(" or ")}`)
+          throw new Error(`Comments must mention ${mentions.map((m) => "\`" + m + "\`").join(" or ")} (add \`!\` for direct review, e.g. \`/oc!\`)`)
         })()
 
         // Handle images
