@@ -211,6 +211,18 @@ query ($owner: String!, $repo: String!, $number: Int!) {
         return
       }
 
+      /* ==================================================
+       * === DEBUG PROBE — RAW LLM OUTPUT (TEMPORARY) ===
+       * Tujuan: bukti LLM benar-benar mengeluarkan teks.
+       * HAPUS SETELAH TERBUKTI.
+       * ================================================== */
+      await octokit.issues.createComment({
+        owner,
+        repo,
+        issue_number: prNumber,
+        body: `🧪 RAW LLM OUTPUT (DEBUG):\n\n${raw}`,
+      })
+
       /* --------------------------------------------------
        * STEP 7.3 — Parse structured review
        * -------------------------------------------------- */
