@@ -741,23 +741,33 @@ export const GithubRunCommand = cmd({
 
       /**
        * Check if Phase 1 (clarifying questions) has already been asked for this PR
-       * by looking for the bot's question pattern in previous comments/reviews
+       * OR if user has already used /oc! (direct review) - in either case, skip Phase 1
        */
       async function hasPhase1BeenAsked(): Promise<boolean> {
         if (!issueId) return false
 
         try {
-          // Fetch PR comments and reviews to check for Phase 1 pattern
+          // Fetch PR comments and reviews to check for previous engagement
           const prData = await fetchPR()
 
-          // Phase 1 pattern to look for in bot comments
+          // Patterns to detect:
+          // 1. Bot's Phase 1 questions were already asked
+          // 2. User already used /oc! (direct review) = review exists
           const phase1Pattern = /🤔.*Before I review.*questions/i
+          const directReviewPattern = /\/(oc|opencode)!/i
 
           // Check issue-style comments
           const comments = prData.comments?.nodes || []
           for (const comment of comments) {
-            if (comment.body && phase1Pattern.test(comment.body)) {
-              return true
+            if (comment.body) {
+              // Check if Phase 1 was asked (bot comment)
+              if (phase1Pattern.test(comment.body)) {
+                return true
+              }
+              // Check if user already used /oc! (user comment)
+              if (directReviewPattern.test(comment.body)) {
+                return true
+              }
             }
           }
 
