@@ -45,9 +45,23 @@ export namespace ReviewComment {
   export type ChecklistItem = z.infer<typeof ChecklistItem>
 
   /**
+   * Item that was explicitly not reviewed
+   */
+  export const NotReviewedItem = z.object({
+    /** What was not reviewed */
+    item: z.string().describe("What was not reviewed (e.g., 'Migrations')"),
+    /** Why it was skipped */
+    reason: z.string().describe("Why it was skipped (e.g., 'In PR #352')"),
+  })
+  export type NotReviewedItem = z.infer<typeof NotReviewedItem>
+
+  /**
    * The full structured review output from the LLM
    */
   export const ReviewOutput = z.object({
+    /** Restated context from user's answers */
+    context_summary: z.string().optional().describe("Restated context from user's answers (e.g., 'Focusing on models only')"),
+
     /** Overall summary of the review */
     summary: z.string().describe("Overall summary of the code review"),
 
@@ -59,6 +73,9 @@ export namespace ReviewComment {
 
     /** General observations that don't map to specific lines */
     general_observations: z.array(z.string()).optional().describe("General observations not tied to specific lines"),
+
+    /** Items explicitly not reviewed (hybrid: extracted from user answers + inferred) */
+    not_reviewed: z.array(NotReviewedItem).optional().describe("Items explicitly not reviewed"),
 
     /** Review decision */
     decision: z.enum(["APPROVE", "REQUEST_CHANGES", "COMMENT"]).optional().describe("Review decision"),

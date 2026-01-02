@@ -739,6 +739,43 @@ export const GithubRunCommand = cmd({
         }
       }
 
+      /**
+       * Check if Phase 1 (clarifying questions) has already been asked for this PR
+       * by looking for the bot's question pattern in previous comments/reviews
+       */
+      async function hasPhase1BeenAsked(): Promise<boolean> {
+        if (!issueId) return false
+
+        try {
+          // Fetch PR comments and reviews to check for Phase 1 pattern
+          const prData = await fetchPR()
+
+          // Phase 1 pattern to look for in bot comments
+          const phase1Pattern = /🤔.*Before I review.*questions/i
+
+          // Check issue-style comments
+          const comments = prData.comments?.nodes || []
+          for (const comment of comments) {
+            if (comment.body && phase1Pattern.test(comment.body)) {
+              return true
+            }
+          }
+
+          // Check review comments
+          const reviews = prData.reviews?.nodes || []
+          for (const review of reviews) {
+            if (review.body && phase1Pattern.test(review.body)) {
+              return true
+            }
+          }
+
+          return false
+        } catch (e) {
+          console.warn("Failed to check Phase 1 status:", e)
+          return false
+        }
+      }
+
       async function getUserPrompt() {
         const customPrompt = process.env["PROMPT"]
         // For repo events and issues events, PROMPT is required since there's no comment to extract from
@@ -759,7 +796,7 @@ export const GithubRunCommand = cmd({
           .split(",")
           .map((m) => m.trim().toLowerCase())
           .filter(Boolean)
-        let prompt = (() => {
+        let prompt = await (async () => {
           if (!isCommentEvent) {
             return "Review this pull request"
           }
@@ -794,6 +831,45 @@ Reply with \`/oc\` followed by your answers (e.g., "/oc 1. Yes 2. Models only"),
 
           // Handle /oc with additional text (user answering questions or providing context)
           if (mentions.some((m) => bodyLower.includes(m))) {
+            // Check for recheck/rereview trigger first
+            const isRecheckTrigger = /\/(oc|opencode)\s*(recheck|rereview|check\s*again)/i.test(body)
+            if (isRecheckTrigger) {
+              const userMessage = body.replace(/\/(oc|opencode)\s*(recheck|rereview|check\s*again)/gi, "").trim()
+              return `[RECHECK] User is requesting a re-review after fixing previous feedback.
+
+User's context: ${userMessage || "Fixed previous issues"}
+
+INSTRUCTIONS:
+1. You should check if the previous issues have been resolved
+2. Compare the current diff against previous feedback
+3. Mark resolved issues and any remaining issues
+
+Output your review as structured JSON:
+\`\`\`json
+{
+  "context_summary": "Re-review after fixing: [what was fixed]",
+  "summary": "Status of previous feedback resolution",
+  
+  "checklist": [
+    {
+      "item": "Previous issue: [issue name]",
+      "passed": true,
+      "note": "✅ Resolved in commit xyz" 
+    }
+  ],
+  
+  "comments": [],
+  
+  "not_reviewed": [
+    {"item": "Items from previous review", "reason": "Already addressed"}
+  ],
+  
+  "decision": "APPROVE|REQUEST_CHANGES",
+  "decision_reason": "All previous issues resolved / Some issues remain"
+}
+\`\`\``
+            }
+
             // Check for direct review trigger first (/oc! anywhere in text)
             const isDirectReview = mentions.some((m) => bodyLower.includes(m + "!"))
             if (isDirectReview) {
@@ -805,6 +881,7 @@ IMPORTANT: Output your review as structured JSON with a DYNAMIC checklist based 
 
 \`\`\`json
 {
+  "context_summary": "${userMessage || "Direct review requested"}",
   "summary": "1-2 sentence summary of what this PR does",
   
   "checklist": [
@@ -825,6 +902,10 @@ IMPORTANT: Output your review as structured JSON with a DYNAMIC checklist based 
   ],
   
   "general_observations": ["Any observations not tied to specific lines"],
+  
+  "not_reviewed": [
+    {"item": "Thing not reviewed", "reason": "Per user context / Not in diff"}
+  ],
   
   "decision": "APPROVE|REQUEST_CHANGES",
   "decision_reason": "Why this decision"
@@ -848,6 +929,10 @@ CHECKLIST GENERATION RULES:
             // and go directly to Phase 2 with focused context
             const isThreadedReply = reviewContext?.inReplyToId !== undefined
 
+            // PHASE 1 ALREADY DONE:
+            // If Phase 1 questions were already asked, skip directly to Phase 2
+            const phase1AlreadyAsked = await hasPhase1BeenAsked()
+
             if (isThreadedReply) {
               // Threaded reply → Skip Phase 1, use thread context for focused response
               return `[THREAD_REPLY] User is replying in a code review thread. Provide a focused response based on the thread context.
@@ -865,17 +950,18 @@ Respond directly to the user's message. If they've acknowledged a fix, confirm a
 Keep your response focused on this specific issue only. Do NOT ask Phase 1 questions.`
             }
 
-            if (hasNumberedAnswers) {
-              // User is answering questions → Phase 2
-              return `[PHASE_2] User has answered your clarifying questions. Now provide the focused review based on their answers.
+            if (hasNumberedAnswers || phase1AlreadyAsked) {
+              // User is answering questions OR Phase 1 was already asked → Phase 2
+              return `[PHASE_2] ${hasNumberedAnswers ? "User has answered your clarifying questions." : "Phase 1 questions were already asked."} Now provide the focused review.
 
-User's answers:
+User's context/answers:
 ${userMessage}
 
 IMPORTANT: Output your review as structured JSON with a DYNAMIC checklist based on PR type:
 
 \`\`\`json
 {
+  "context_summary": "Summarize user's context/focus from their message",
   "summary": "1-2 sentence summary of what this PR does",
   
   "checklist": [
@@ -897,6 +983,10 @@ IMPORTANT: Output your review as structured JSON with a DYNAMIC checklist based 
   
   "general_observations": ["Any observations not tied to specific lines"],
   
+  "not_reviewed": [
+    {"item": "Thing not reviewed", "reason": "Per user context / Not in diff"}
+  ],
+  
   "decision": "APPROVE|REQUEST_CHANGES",
   "decision_reason": "Why this decision"
 }
@@ -909,7 +999,7 @@ CHECKLIST GENERATION RULES:
 - If PR adds services: check business logic separation, error handling
 - If PR adds controllers: check input validation, output formatting
 - Be CONTEXT-AWARE based on user's answers, not generic
-- Mark items NOT reviewed (per user context) as "skipped" with reason`
+- Mark items NOT reviewed (per user context) with "skipped" status and reason`
             }
 
             // /oc or /oc <text> without numbered answers → Phase 1
@@ -1542,6 +1632,12 @@ Co-authored-by: ${actor} <${actor}@users.noreply.github.com>"`
           reviewParts.push("## 🤖 AI Code Review")
           reviewParts.push("")
 
+          // Context summary (if present)
+          if (reviewData.context_summary) {
+            reviewParts.push(`> **Context:** ${reviewData.context_summary}`)
+            reviewParts.push("")
+          }
+
           // Summary
           reviewParts.push(`> ${reviewData.summary}`)
           reviewParts.push("")
@@ -1587,6 +1683,15 @@ Co-authored-by: ${actor} <${actor}@users.noreply.github.com>"`
               reviewParts.push(`**Reason:** ${reviewData.decision_reason}`)
               reviewParts.push("")
             }
+          }
+
+          // Not reviewed section (if present)
+          if (reviewData.not_reviewed && reviewData.not_reviewed.length > 0) {
+            reviewParts.push("**Not reviewed (per your context):**")
+            reviewData.not_reviewed.forEach((item) => {
+              reviewParts.push(`- ~~${item.item}~~ → ${item.reason}`)
+            })
+            reviewParts.push("")
           }
 
           const fullSummary = reviewParts.join("\n") + fallbackFooter
