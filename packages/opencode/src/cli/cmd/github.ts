@@ -417,7 +417,7 @@ jobs:
           GITHUB_EVENT_PATH: \${{ github.event_path }}
           OPENCODE_MODEL: ${provider}/${model}
 ${envSecrets}
-        run: bun run /tmp/opencode/packages/opencode/src/cli/index.ts github run
+        run: bun run /tmp/opencode/packages/opencode/src/index.ts github run
 `,
             )
 
