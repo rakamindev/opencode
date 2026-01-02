@@ -1723,9 +1723,49 @@ Co-authored-by: ${actor} <${actor}@users.noreply.github.com>"`
           )
 
           if (formattedComments.length > 0) {
-            await createPullRequestReview(prNumber, fullSummary, formattedComments)
-            console.log(`Posted inline review with ${formattedComments.length} comments`)
-            return true
+            // Get files in the PR to validate paths
+            const { data: prData } = await octoRest.rest.pulls.get({
+              owner,
+              repo,
+              pull_number: prNumber,
+            })
+
+            // Fetch changed files in PR
+            const { data: prFiles } = await octoRest.rest.pulls.listFiles({
+              owner,
+              repo,
+              pull_number: prNumber,
+              per_page: 100,
+            })
+            const validPaths = new Set(prFiles.map((f) => f.filename))
+
+            // Filter comments to only include valid paths
+            const validComments = formattedComments.filter((c) => {
+              if (validPaths.has(c.path)) {
+                return true
+              }
+              console.warn(`Skipping comment for invalid path: ${c.path} (not in PR diff)`)
+              return false
+            })
+
+            // If some comments were filtered, add them to the summary
+            const invalidComments = formattedComments.filter((c) => !validPaths.has(c.path))
+            let summaryWithInvalid = fullSummary
+            if (invalidComments.length > 0) {
+              summaryWithInvalid = fullSummary + "\n\n**Additional notes (files not in this PR):**\n" +
+                invalidComments.map((c) => `- **${c.path}:${c.line}** - ${c.body}`).join("\n")
+            }
+
+            if (validComments.length > 0) {
+              await createPullRequestReview(prNumber, summaryWithInvalid, validComments)
+              console.log(`Posted inline review with ${validComments.length} comments (${invalidComments.length} skipped)`)
+              return true
+            } else {
+              // All comments were for invalid paths, just post summary with notes
+              await createComment(summaryWithInvalid)
+              console.log(`No valid inline comments, posted summary with ${invalidComments.length} notes`)
+              return false
+            }
           } else {
             // No inline comments, just post summary
             await createComment(fullSummary)
