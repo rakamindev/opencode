@@ -556,7 +556,7 @@ export const GithubRunCommand = cmd({
           }
           const branchPrefix = isWorkflowDispatchEvent ? "dispatch" : "schedule"
           const branch = await checkoutNewBranch(branchPrefix)
-          const head = (await $`git rev - parse HEAD`).stdout.toString().trim()
+          const head = (await $`git rev-parse HEAD`).stdout.toString().trim()
           const response = await chat(userPrompt, promptFiles)
           const { dirty, uncommittedChanges } = await branchIsDirty(head)
           if (dirty) {
@@ -582,7 +582,7 @@ export const GithubRunCommand = cmd({
           // Local PR
           if (prData.headRepository.nameWithOwner === prData.baseRepository.nameWithOwner) {
             await checkoutLocalBranch(prData)
-            const head = (await $`git rev - parse HEAD`).stdout.toString().trim()
+            const head = (await $`git rev-parse HEAD`).stdout.toString().trim()
             const dataPrompt = await buildPromptDataForPR(prData)
             const response = await chat(`${userPrompt}\n\n${dataPrompt}`, promptFiles)
             const { dirty, uncommittedChanges } = await branchIsDirty(head)
@@ -602,7 +602,7 @@ export const GithubRunCommand = cmd({
           // Fork PR
           else {
             await checkoutForkBranch(prData)
-            const head = (await $`git rev - parse HEAD`).stdout.toString().trim()
+            const head = (await $`git rev-parse HEAD`).stdout.toString().trim()
             const dataPrompt = await buildPromptDataForPR(prData)
             const response = await chat(`${userPrompt}\n\n${dataPrompt}`, promptFiles)
             const { dirty, uncommittedChanges } = await branchIsDirty(head)
@@ -623,7 +623,7 @@ export const GithubRunCommand = cmd({
         // Issue
         else {
           const branch = await checkoutNewBranch("issue")
-          const head = (await $`git rev - parse HEAD`).stdout.toString().trim()
+          const head = (await $`git rev-parse HEAD`).stdout.toString().trim()
           const issueData = await fetchIssue()
           const dataPrompt = buildPromptDataForIssue(issueData)
           const response = await chat(`${userPrompt}\n\n${dataPrompt}`, promptFiles)
