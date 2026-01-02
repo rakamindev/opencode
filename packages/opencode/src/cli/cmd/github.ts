@@ -178,7 +178,7 @@ export function extractResponseText(parts: MessageV2.Part[]): string | null {
   if (toolParts.length > 0) return null
 
   // Priority 4: Step parts or other unknown parts
-  // When Gemini 2.0 uses tools or thinks, it may emit step-start/step-finish or other types.
+  // When Gemini 3.0+ uses tools or thinks, it may emit step-start/step-finish or other types.
   // We return null to signal summary needed if there is no text.
   return null
 }
