@@ -791,6 +791,13 @@ Reply with \`/oc\` followed by your answers (e.g., "/oc 1. Yes 2. Models only"),
 
           // Handle /oc with additional text (user answering questions or providing context)
           if (mentions.some((m) => bodyLower.includes(m))) {
+            // Check for direct review trigger first (/oc! anywhere in text)
+            const isDirectReview = mentions.some((m) => bodyLower.includes(m + "!"))
+            if (isDirectReview) {
+              const userMessage = body.replace(/\/oc!?|\/opencode!?/gi, "").trim()
+              return `[DIRECT_REVIEW] Review this pull request directly without asking clarifying questions. User context: ${userMessage || "None provided"}`
+            }
+
             const userMessage = body.replace(/\/oc!?|\/opencode!?/gi, "").trim()
             const hasNumberedAnswers = /^\s*\d+[\.\)]\s*.+/m.test(userMessage)
 
@@ -799,11 +806,26 @@ Reply with \`/oc\` followed by your answers (e.g., "/oc 1. Yes 2. Models only"),
               return `[PHASE_2] User has answered your clarifying questions. Now provide the focused review based on their answers:\n\nUser's answers:\n${userMessage}`
             }
 
-            // User provided context with /oc → treat as additional context
-            if (reviewContext) {
-              return `${body}\n\nContext: You are reviewing a comment on file "${reviewContext.file}" at line ${reviewContext.line}.\n\nDiff context:\n${reviewContext.diffHunk}`
-            }
-            return body
+            // /oc or /oc <text> without numbered answers → Phase 1
+            return `[PHASE_1] Before reviewing this pull request, analyze the changes and ask 2-4 clarifying questions. DO NOT provide the actual review yet - just ask focused questions.
+
+User's additional context: ${userMessage || "None provided"}
+
+Example output format:
+
+🤔 **Before I review, a few questions:**
+
+**PR Type Detected:** [Type based on files changed]
+
+**I noticed:**
+- [Observation about what's in the PR]
+- [Observation about what seems missing]
+
+**Questions:**
+1. [Context question]
+2. [Focus question]
+
+Reply with \`/oc\` followed by your answers (e.g., "/oc 1. Yes 2. Models only"), or use \`/oc!\` to skip questions.`
           }
           throw new Error(`Comments must mention ${mentions.map((m) => "\`" + m + "\`").join(" or ")} (add \`!\` for direct review, e.g. \`/oc!\`)`)
         })()
