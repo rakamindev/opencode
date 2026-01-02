@@ -795,7 +795,23 @@ Reply with \`/oc\` followed by your answers (e.g., "/oc 1. Yes 2. Models only"),
             const isDirectReview = mentions.some((m) => bodyLower.includes(m + "!"))
             if (isDirectReview) {
               const userMessage = body.replace(/\/oc!?|\/opencode!?/gi, "").trim()
-              return `[DIRECT_REVIEW] Review this pull request directly without asking clarifying questions. User context: ${userMessage || "None provided"}`
+              return `[DIRECT_REVIEW] Review this pull request directly without asking clarifying questions. User context: ${userMessage || "None provided"}
+
+IMPORTANT: Output your review as structured JSON for inline comments:
+\`\`\`json
+{
+  "summary": "Brief overall summary (1-2 sentences)",
+  "comments": [
+    {
+      "path": "src/path/to/file.js",
+      "line": 42,
+      "body": "Issue description",
+      "severity": "error|warning|info|suggestion"
+    }
+  ],
+  "general_observations": ["Any observations not tied to specific lines"]
+}
+\`\`\``
             }
 
             const userMessage = body.replace(/\/oc!?|\/opencode!?/gi, "").trim()
@@ -803,7 +819,26 @@ Reply with \`/oc\` followed by your answers (e.g., "/oc 1. Yes 2. Models only"),
 
             if (hasNumberedAnswers) {
               // User is answering questions → Phase 2
-              return `[PHASE_2] User has answered your clarifying questions. Now provide the focused review based on their answers:\n\nUser's answers:\n${userMessage}`
+              return `[PHASE_2] User has answered your clarifying questions. Now provide the focused review based on their answers:
+
+User's answers:
+${userMessage}
+
+IMPORTANT: Output your review as structured JSON for inline comments:
+\`\`\`json
+{
+  "summary": "Brief overall summary (1-2 sentences)",
+  "comments": [
+    {
+      "path": "src/path/to/file.js",
+      "line": 42,
+      "body": "Issue description",
+      "severity": "error|warning|info|suggestion"
+    }
+  ],
+  "general_observations": ["Any observations not tied to specific lines"]
+}
+\`\`\``
             }
 
             // /oc or /oc <text> without numbered answers → Phase 1
