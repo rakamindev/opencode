@@ -818,10 +818,9 @@ export const GithubRunCommand = cmd({
           console.log("=========================================")
 
           const message = isStrict
-            ? `⚠️ This PR targets **${prData.baseRefName}** (protected branch). Concurrent implementation rules are ENFORCED.`
-            : strictReviewBranches.length > 0
-              ? `ℹ️ This PR targets **${prData.baseRefName}** (non-protected). Concurrent rules shown as INFO only.`
-              : ""
+real simulation.but in cli            : strictReviewBranches.length > 0
+            ? `ℹ️ This PR targets **${prData.baseRefName}** (non-protected). Concurrent rules shown as INFO only.`
+            : ""
 
           return { isStrict, targetBranch, message }
         } catch (e) {
@@ -942,9 +941,14 @@ ${await (async () => {
 - ENFORCE these rules: Missing concurrent implementations should be marked as FAIL and decision should be REQUEST_CHANGES`
                   } else {
                     return `- ${message || "No strict branches configured."}
-- Show concurrent rule violations as INFO/reminder only, NOT blocking
-- Decision can still be APPROVE if the actual code changes in this PR are correct
-- Add a note: "Models/hooks needed before merging to protected branch"`
+
+IMPORTANT - NON-STRICT BRANCH BEHAVIOR:
+- Do NOT mark missing concurrent deps (models, hooks, associations) as FAIL
+- Use "passed": null with note "⏭️ Skipped - to be added in separate PR" for concurrent items
+- Focus ONLY on reviewing the actual code IN THIS PR (migrations, tests, etc.)
+- Decision should be APPROVE if the code IN THIS PR is correct
+- Add reminder in not_reviewed: "Models/hooks needed before merging to protected branch"
+- Do NOT block the PR for files that are intentionally out of scope`
                   }
                 })()}`
             }
@@ -1007,8 +1011,14 @@ ${await (async () => {
 - ENFORCE these rules: Missing concurrent implementations should be marked as FAIL and decision should be REQUEST_CHANGES`
                   } else {
                     return `- ${message || "No strict branches configured."}
-- Show concurrent rule violations as INFO/reminder only, NOT blocking
-- Decision can still be APPROVE with info notes about what needs to be done before production`
+
+IMPORTANT - NON-STRICT BRANCH BEHAVIOR:
+- Do NOT mark missing concurrent deps (models, hooks, associations) as FAIL
+- Use "passed": null with note "⏭️ Skipped - to be added in separate PR" for concurrent items
+- Focus ONLY on reviewing the actual code IN THIS PR (migrations, tests, etc.)
+- Decision should be APPROVE if the code IN THIS PR is correct
+- Add reminder in not_reviewed: "Models/hooks needed before merging to protected branch"
+- Do NOT block the PR for files that are intentionally out of scope`
                   }
                 })()}`
             }
@@ -1101,8 +1111,14 @@ ${await (async () => {
 - ENFORCE these rules: Missing concurrent implementations should be marked as FAIL and decision should be REQUEST_CHANGES`
                   } else {
                     return `- ${message || "No strict branches configured."}
-- Show concurrent rule violations as INFO/reminder only, NOT blocking
-- Decision can still be APPROVE with info notes about what needs to be done before production`
+
+IMPORTANT - NON-STRICT BRANCH BEHAVIOR:
+- Do NOT mark missing concurrent deps (models, hooks, associations) as FAIL
+- Use "passed": null with note "⏭️ Skipped - to be added in separate PR" for concurrent items
+- Focus ONLY on reviewing the actual code IN THIS PR (migrations, tests, etc.)
+- Decision should be APPROVE if the code IN THIS PR is correct
+- Add reminder in not_reviewed: "Models/hooks needed before merging to protected branch"
+- Do NOT block the PR for files that are intentionally out of scope`
                   }
                 })()}`
             }
