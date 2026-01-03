@@ -577,13 +577,26 @@ export namespace ReviewRules {
         maxFiles: 10,
         maxLinesPerFile: 300,
       },
-      prompt: `When reviewing migrations:
-- Foreign keys should have indexes
-- Unique constraints should have indexes
-- Columns used in WHERE/ORDER BY frequently need indexes
-- Compound indexes for multi-column queries
-- Consider partial indexes for filtered queries
-- Check for missing indexes on new columns`,
+      prompt: `When reviewing migrations, THINK about how data will be queried:
+
+INDEX DECISION FRAMEWORK:
+1. What queries will this table serve? (list the common access patterns)
+2. What columns appear in WHERE clauses? (need indexes)
+3. What columns appear in ORDER BY? (consider in compound index)
+4. Are there JOINs through this table? (foreign keys need indexes)
+
+QUERY PATTERN ANALYSIS:
+- "Get X by Y" → Index on Y
+- "Get X by Y ordered by Z" → Compound index (Y, Z)
+- "Get children of parent ordered by date" → Index on (parent_fk, created_at)
+- "Get recent items" → Index on (created_at) or include in compound
+
+SELF-REFERENTIAL / HIERARCHICAL TABLES:
+- If a table references itself (parent_id pattern), think about:
+  - How will children be fetched? By parent + sort order?
+  - Recommend appropriate compound index based on query pattern
+
+Always explain WHY an index is needed based on expected query patterns.`,
     },
 
     // ====== FACTORY & TEST DATA CONSISTENCY ======
