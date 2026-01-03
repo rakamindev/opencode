@@ -488,6 +488,12 @@ export const GithubRunCommand = cmd({
       const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${runId}`
       const shareBaseUrl = isMock ? "https://dev.opencode.ai" : "https://opencode.ai"
 
+      // Branch-aware strict review: only enforce concurrent rules on specified branches
+      const strictReviewBranches = (process.env["STRICT_REVIEW_BRANCHES"] || "")
+        .split(",")
+        .map((b) => b.trim().toLowerCase())
+        .filter(Boolean)
+
       let appToken: string
       let octoRest: Octokit
       let octoGraph: typeof graphql
@@ -786,6 +792,36 @@ export const GithubRunCommand = cmd({
         }
       }
 
+      /**
+       * Get review strictness based on PR target branch.
+       * Returns whether concurrent rules should be blocking or info-only.
+       */
+      async function getReviewStrictness(): Promise<{
+        isStrict: boolean
+        targetBranch: string
+        message: string
+      }> {
+        if (!issueId) return { isStrict: false, targetBranch: "", message: "" }
+
+        try {
+          const prData = await fetchPR()
+          const targetBranch = prData.baseRefName?.toLowerCase() || ""
+
+          const isStrict = strictReviewBranches.length > 0 && strictReviewBranches.includes(targetBranch)
+
+          const message = isStrict
+            ? `⚠️ This PR targets **${prData.baseRefName}** (protected branch). Concurrent implementation rules are ENFORCED.`
+            : strictReviewBranches.length > 0
+              ? `ℹ️ This PR targets **${prData.baseRefName}** (non-protected). Concurrent rules shown as INFO only.`
+              : ""
+
+          return { isStrict, targetBranch, message }
+        } catch (e) {
+          console.warn("Failed to get review strictness:", e)
+          return { isStrict: false, targetBranch: "", message: "" }
+        }
+      }
+
       async function getUserPrompt() {
         const customPrompt = process.env["PROMPT"]
         // For repo events and issues events, PROMPT is required since there's no comment to extract from
@@ -939,7 +975,20 @@ CHECKLIST GENERATION RULES:
 - If PR adds migrations: check column types, indexes, rollback safety
 - If PR adds services: check business logic separation, error handling
 - If PR adds controllers: check input validation, output formatting
-- Be CONTEXT-AWARE, not generic`
+- Be CONTEXT-AWARE, not generic
+
+CONCURRENT IMPLEMENTATION RULES (model-migration-sync, controller-service, etc.):
+${await (async () => {
+                  const { isStrict, message } = await getReviewStrictness()
+                  if (isStrict) {
+                    return `- ${message}
+- ENFORCE these rules: Missing concurrent implementations should be marked as FAIL and decision should be REQUEST_CHANGES`
+                  } else {
+                    return `- ${message || "No strict branches configured."}
+- Show concurrent rule violations as INFO/reminder only, NOT blocking
+- Decision can still be APPROVE with info notes about what needs to be done before production`
+                  }
+                })()}`
             }
 
             const userMessage = body.replace(/\/oc!?|\/opencode!?/gi, "").trim()
@@ -1020,7 +1069,20 @@ CHECKLIST GENERATION RULES:
 - If PR adds services: check business logic separation, error handling
 - If PR adds controllers: check input validation, output formatting
 - Be CONTEXT-AWARE based on user's answers, not generic
-- Mark items NOT reviewed (per user context) with "skipped" status and reason`
+- Mark items NOT reviewed (per user context) with "skipped" status and reason
+
+CONCURRENT IMPLEMENTATION RULES (model-migration-sync, controller-service, etc.):
+${await (async () => {
+                  const { isStrict, message } = await getReviewStrictness()
+                  if (isStrict) {
+                    return `- ${message}
+- ENFORCE these rules: Missing concurrent implementations should be marked as FAIL and decision should be REQUEST_CHANGES`
+                  } else {
+                    return `- ${message || "No strict branches configured."}
+- Show concurrent rule violations as INFO/reminder only, NOT blocking
+- Decision can still be APPROVE with info notes about what needs to be done before production`
+                  }
+                })()}`
             }
 
             // /oc or /oc <text> without numbered answers → Phase 1
