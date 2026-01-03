@@ -58,6 +58,8 @@ export namespace ReviewRules {
           "**/.github/runner-scripts/memory-bank.md",
           "**/AGENTS.md",
           "**/CLAUDE.md",
+          "**/OPENCODE.md",
+          "**/RAKAMIND.md",
         ],
         maxFiles: 3,
         maxLinesPerFile: 2000,
