@@ -893,7 +893,13 @@ Reply with \`/oc\` followed by your answers (e.g., "/oc 1. Yes 2. Models only"),
 
 User's context: ${userMessage || "Fixed previous issues"}
 
-CRITICAL: Output ONLY valid JSON. NO explanations. NO text before or after JSON.
+CRITICAL INSTRUCTIONS:
+1. You are a CODE REVIEWER, not a fixer. DO NOT attempt to apply code changes.
+2. DO NOT return file edits, string replacements, or code arrays.
+3. Output ONLY the review JSON format shown below.
+4. If you want to suggest code changes, use the "suggestion" field in comments.
+
+Output ONLY valid JSON. NO explanations. NO text before or after JSON.
 
 \`\`\`json
 {
