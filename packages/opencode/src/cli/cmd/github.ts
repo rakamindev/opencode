@@ -932,7 +932,21 @@ RULES:
 - Use "body" not "note" for comment text
 - Use "severity" for each comment (error/warning/info/suggestion)
 - If no inline comments needed, use empty array: "comments": []
-- Checklist items should track resolution of PREVIOUS issues`
+- Checklist items should track resolution of PREVIOUS issues
+
+CONCURRENT IMPLEMENTATION RULES (model-migration-sync, controller-service, etc.):
+${await (async () => {
+                  const { isStrict, message } = await getReviewStrictness()
+                  if (isStrict) {
+                    return `- ${message}
+- ENFORCE these rules: Missing concurrent implementations should be marked as FAIL and decision should be REQUEST_CHANGES`
+                  } else {
+                    return `- ${message || "No strict branches configured."}
+- Show concurrent rule violations as INFO/reminder only, NOT blocking
+- Decision can still be APPROVE if the actual code changes in this PR are correct
+- Add a note: "Models/hooks needed before merging to protected branch"`
+                  }
+                })()}`
             }
 
             // Check for direct review trigger first (/oc! anywhere in text)
