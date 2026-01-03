@@ -809,6 +809,14 @@ export const GithubRunCommand = cmd({
 
           const isStrict = strictReviewBranches.length > 0 && strictReviewBranches.includes(targetBranch)
 
+          // Debug logging for branch-aware strict review
+          console.log("=== BRANCH-AWARE STRICT REVIEW DEBUG ===")
+          console.log(`STRICT_REVIEW_BRANCHES env: "${process.env["STRICT_REVIEW_BRANCHES"] || "(not set)"}"`)
+          console.log(`Parsed strict branches: [${strictReviewBranches.join(", ")}]`)
+          console.log(`PR target branch: "${prData.baseRefName}" (normalized: "${targetBranch}")`)
+          console.log(`Is strict review: ${isStrict}`)
+          console.log("=========================================")
+
           const message = isStrict
             ? `⚠️ This PR targets **${prData.baseRefName}** (protected branch). Concurrent implementation rules are ENFORCED.`
             : strictReviewBranches.length > 0
