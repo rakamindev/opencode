@@ -941,15 +941,23 @@ ${await (async () => {
                     return `- ${message}
 - ENFORCE these rules: Missing concurrent implementations should be marked as FAIL and decision should be REQUEST_CHANGES`
                   } else {
-                    return `- ${message || "No strict branches configured."}
+                    return `
+=== CRITICAL: NON-STRICT BRANCH - READ THIS FIRST ===
+${message || "No strict branches configured."}
 
-IMPORTANT - NON-STRICT BRANCH BEHAVIOR:
-- Do NOT mark missing concurrent deps (models, hooks, associations) as FAIL
-- Use "passed": null with note "⏭️ Skipped - to be added in separate PR" for concurrent items
-- Focus ONLY on reviewing the actual code IN THIS PR (migrations, tests, etc.)
-- Decision should be APPROVE if the code IN THIS PR is correct
-- Add reminder in not_reviewed: "Models/hooks needed before merging to protected branch"
-- Do NOT block the PR for files that are intentionally out of scope`
+YOU MUST FOLLOW THESE RULES FOR THIS NON-PROTECTED BRANCH:
+1. Do NOT mark missing concurrent deps (models, hooks, associations) as FAIL
+2. Use "passed": null with note "⏭️ Skipped - to be added in separate PR"
+3. Focus ONLY on reviewing the actual code IN THIS PR
+4. Decision should be APPROVE if the code IN THIS PR is correct
+5. Do NOT use REQUEST_CHANGES for missing files outside this PR
+6. Think: "Is the migration code correct?" not "Are all related files present?"
+
+CORRECT OUTPUT FOR NON-STRICT BRANCH:
+- Checklist item for missing models: {"item": "Model files", "passed": null, "note": "⏭️ Skipped - to be added in separate PR before merging to protected branch"}
+- Decision: "APPROVE" (assuming migration code is correct)
+- not_reviewed: "Models/hooks needed before merging to protected branch"
+=== END CRITICAL SECTION ===`
                   }
                 })()}`
             }
@@ -1011,15 +1019,17 @@ ${await (async () => {
                     return `- ${message}
 - ENFORCE these rules: Missing concurrent implementations should be marked as FAIL and decision should be REQUEST_CHANGES`
                   } else {
-                    return `- ${message || "No strict branches configured."}
+                    return `
+=== CRITICAL: NON-STRICT BRANCH - READ THIS FIRST ===
+${message || "No strict branches configured."}
 
-IMPORTANT - NON-STRICT BRANCH BEHAVIOR:
-- Do NOT mark missing concurrent deps (models, hooks, associations) as FAIL
-- Use "passed": null with note "⏭️ Skipped - to be added in separate PR" for concurrent items
-- Focus ONLY on reviewing the actual code IN THIS PR (migrations, tests, etc.)
-- Decision should be APPROVE if the code IN THIS PR is correct
-- Add reminder in not_reviewed: "Models/hooks needed before merging to protected branch"
-- Do NOT block the PR for files that are intentionally out of scope`
+YOU MUST FOLLOW THESE RULES FOR THIS NON-PROTECTED BRANCH:
+1. Do NOT mark missing concurrent deps (models, hooks, associations) as FAIL
+2. Use "passed": null with note "⏭️ Skipped - to be added in separate PR"
+3. Focus ONLY on reviewing the actual code IN THIS PR
+4. Decision should be APPROVE if the code IN THIS PR is correct
+5. Do NOT use REQUEST_CHANGES for missing files outside this PR
+=== END CRITICAL SECTION ===`
                   }
                 })()}`
             }
@@ -1111,15 +1121,17 @@ ${await (async () => {
                     return `- ${message}
 - ENFORCE these rules: Missing concurrent implementations should be marked as FAIL and decision should be REQUEST_CHANGES`
                   } else {
-                    return `- ${message || "No strict branches configured."}
+                    return `
+=== CRITICAL: NON-STRICT BRANCH - READ THIS FIRST ===
+${message || "No strict branches configured."}
 
-IMPORTANT - NON-STRICT BRANCH BEHAVIOR:
-- Do NOT mark missing concurrent deps (models, hooks, associations) as FAIL
-- Use "passed": null with note "⏭️ Skipped - to be added in separate PR" for concurrent items
-- Focus ONLY on reviewing the actual code IN THIS PR (migrations, tests, etc.)
-- Decision should be APPROVE if the code IN THIS PR is correct
-- Add reminder in not_reviewed: "Models/hooks needed before merging to protected branch"
-- Do NOT block the PR for files that are intentionally out of scope`
+YOU MUST FOLLOW THESE RULES FOR THIS NON-PROTECTED BRANCH:
+1. Do NOT mark missing concurrent deps (models, hooks, associations) as FAIL
+2. Use "passed": null with note "⏭️ Skipped - to be added in separate PR"
+3. Focus ONLY on reviewing the actual code IN THIS PR
+4. Decision should be APPROVE if the code IN THIS PR is correct
+5. Do NOT use REQUEST_CHANGES for missing files outside this PR
+=== END CRITICAL SECTION ===`
                   }
                 })()}`
             }
