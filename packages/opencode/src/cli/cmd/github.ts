@@ -911,9 +911,11 @@ CRITICAL: Output ONLY valid JSON. NO explanations. NO text before or after JSON.
   "comments": [
     {
       "path": "src/path/to/file.js",
-      "line": 42,
-      "body": "Issue still present: description",
-      "severity": "error|warning|info|suggestion"
+      "start_line": 42,
+      "line": 55,
+      "body": "Issue description",
+      "severity": "error|warning|info|suggestion",
+      "suggestion": "// corrected code - will create committable suggestion"
     }
   ],
   
@@ -987,9 +989,11 @@ CRITICAL: Output ONLY valid JSON. NO explanations. NO text before or after JSON.
   "comments": [
     {
       "path": "src/path/to/file.js",
-      "line": 42,
+      "start_line": 42,
+      "line": 55,
       "body": "Issue description",
-      "severity": "error|warning|info|suggestion"
+      "severity": "error|warning|info|suggestion",
+      "suggestion": "// corrected code - will create committable suggestion"
     }
   ],
   
@@ -1088,9 +1092,11 @@ CRITICAL: Output ONLY valid JSON. NO explanations. NO text before or after JSON.
   "comments": [
     {
       "path": "src/path/to/file.js",
-      "line": 42,
+      "start_line": 42,
+      "line": 55,
       "body": "Issue description",
-      "severity": "error|warning|info|suggestion"
+      "severity": "error|warning|info|suggestion",
+      "suggestion": "// corrected code - will create committable suggestion"
     }
   ],
   
