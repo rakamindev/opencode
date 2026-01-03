@@ -95,13 +95,17 @@ export namespace ReviewRules {
         maxFiles: 15,
         maxLinesPerFile: 300,
       },
-      prompt: `When reviewing models or migrations:
+      prompt: `When reviewing models or migrations, CHECK THE REVIEW CONTEXT for branch strictness:
 - Verify new model fields have corresponding migration columns
 - Check column types match between model definition and migration
 - Verify foreign key constraints and indexes
 - Check paranoid/soft-delete is consistent (deletedAt column)
 - For Sequelize: verify associations (belongsTo, hasMany, etc.) match FKs
-- For Rails: verify belongs_to/has_many match FKs`,
+
+IMPORTANT: The ENFORCEMENT LEVEL depends on target branch:
+- If targeting PROTECTED branch (main, production): Missing items are BLOCKERS
+- If targeting NON-PROTECTED branch: Missing items are INFO/reminders only
+- Follow the "CONCURRENT IMPLEMENTATION RULES" in the review context for strictness`,
     },
 
     // ====== CONTROLLER ↔ INPUT ↔ OUTPUT ======
@@ -736,13 +740,15 @@ Always explain WHY an index is needed based on expected query patterns.`,
         maxFiles: 10,
         maxLinesPerFile: 200,
       },
-      prompt: `When reviewing models with soft delete:
+      prompt: `When reviewing models with soft delete (CHECK REVIEW CONTEXT for enforcement level):
 - Model should have paranoid: true if soft delete is used
 - Migration should include deleted_at column
 - Queries should respect soft delete (default behavior)
 - Force: true only when GDPR hard delete is needed
 - Check cascading deletes for associations
-- Restore functionality if needed`,
+- Restore functionality if needed
+
+Note: Enforcement level depends on target branch per "CONCURRENT IMPLEMENTATION RULES" in review context`,
     },
 
     // ====== PERMISSION / AUTHORIZATION ======
