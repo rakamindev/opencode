@@ -32,6 +32,7 @@ import { generateObject } from "ai"
 import z from "zod"
 import { repairAndParseJson } from "../../util/json-repair"
 import { parsePatchForValidLines } from "../../util/git-diff"
+import { renderReviewMarkdown, filterCommentsByDiff } from "../../util/github-review-logic"
 
 type GitHubAuthor = {
   login: string
@@ -1838,90 +1839,9 @@ Co-authored-by: ${actor} <${actor}@users.noreply.github.com>"`
 
           const reviewData = result.data
 
-          // Build comprehensive review body
-          const reviewParts: string[] = []
+          const fullSummary = renderReviewMarkdown(reviewData, { fallbackFooter })
 
-          // Header
-          reviewParts.push("## 🤖 AI Code Review")
-          reviewParts.push("")
-
-          // Context summary (if present)
-          if (reviewData.context_summary) {
-            reviewParts.push(`> **Context:** ${reviewData.context_summary}`)
-            reviewParts.push("")
-          }
-
-          // Summary
-          reviewParts.push(`> ${reviewData.summary}`)
-          reviewParts.push("")
-          reviewParts.push("---")
-          reviewParts.push("")
-
-          // Checklist table (if present)
-          if (reviewData.checklist && reviewData.checklist.length > 0) {
-            reviewParts.push("### ✅ Review Checklist")
-            reviewParts.push("")
-            reviewParts.push("| # | Criterion | Status | Note |")
-            reviewParts.push("|---|-----------|--------|------|")
-            reviewData.checklist.forEach((item, index) => {
-              const status = item.passed === true ? "✅ Pass" :
-                item.passed === false ? "❌ Fail" :
-                  "⏭️ Skipped"
-              reviewParts.push(`| ${index + 1} | ${item.item} | ${status} | ${item.note} |`)
-            })
-            reviewParts.push("")
-            reviewParts.push("---")
-            reviewParts.push("")
-          }
-
-          // General observations
-          if (reviewData.general_observations && reviewData.general_observations.length > 0) {
-            reviewParts.push("### 📝 General Observations")
-            reviewParts.push("")
-            reviewData.general_observations.forEach((obs) => {
-              reviewParts.push(`- ${obs}`)
-            })
-            reviewParts.push("")
-            reviewParts.push("---")
-            reviewParts.push("")
-          }
-
-          // Decision (if present)
-          if (reviewData.decision) {
-            const decisionEmoji = reviewData.decision === "APPROVE" ? "✅" :
-              reviewData.decision === "REQUEST_CHANGES" ? "🔄" : "💬"
-            reviewParts.push(`### 🎯 Decision: **${reviewData.decision}** ${decisionEmoji}`)
-            reviewParts.push("")
-            if (reviewData.decision_reason) {
-              reviewParts.push(`**Reason:** ${reviewData.decision_reason}`)
-              reviewParts.push("")
-            }
-          }
-
-          // Not reviewed section (if present)
-          if (reviewData.not_reviewed && reviewData.not_reviewed.length > 0) {
-            reviewParts.push("**Not reviewed (per your context):**")
-            reviewData.not_reviewed.forEach((item) => {
-              reviewParts.push(`- ~~${item.item}~~ → ${item.reason}`)
-            })
-            reviewParts.push("")
-          }
-
-          const fullSummary = reviewParts.join("\n") + fallbackFooter
-
-          // Format comments for GitHub API
-          const formattedComments = reviewData.comments.map((comment) =>
-            ReviewComment.formatForGitHub(comment)
-          )
-
-          if (formattedComments.length > 0) {
-            // Get files in the PR to validate paths
-            const { data: prData } = await octoRest.rest.pulls.get({
-              owner,
-              repo,
-              pull_number: prNumber,
-            })
-
+          if (reviewData.comments && reviewData.comments.length > 0) {
             // Fetch changed files in PR
             const { data: prFiles } = await octoRest.rest.pulls.listFiles({
               owner,
@@ -1929,37 +1849,11 @@ Co-authored-by: ${actor} <${actor}@users.noreply.github.com>"`
               pull_number: prNumber,
               per_page: 100,
             })
-            // Build a map of valid paths and their line ranges from the diff
-            const validPathsWithLines = new Map<string, Set<number>>()
-            for (const file of prFiles) {
-              if (!file.patch) continue
-              const validLines = parsePatchForValidLines(file.patch)
-              validPathsWithLines.set(file.filename, validLines)
-            }
 
-            // Filter comments to only include valid paths AND lines in the diff
-            const validComments: typeof formattedComments = []
-            const invalidComments: typeof formattedComments = []
-
-            for (const comment of formattedComments) {
-              const validLines = validPathsWithLines.get(comment.path)
-              if (!validLines) {
-                console.warn(`Skipping comment: path "${comment.path}" not in PR diff`)
-                invalidComments.push(comment)
-                continue
-              }
-
-              // Check if the comment's line (or range) is in the diff
-              const lineInDiff = validLines.has(comment.line)
-              const startLineInDiff = comment.start_line ? validLines.has(comment.start_line) : true
-
-              if (lineInDiff && startLineInDiff) {
-                validComments.push(comment)
-              } else {
-                console.warn(`Skipping comment: line ${comment.start_line || comment.line}-${comment.line} not in diff for "${comment.path}"`)
-                invalidComments.push(comment)
-              }
-            }
+            const { valid: validComments, invalid: invalidComments } = filterCommentsByDiff(
+              reviewData.comments,
+              prFiles
+            )
 
             let summaryWithInvalid = fullSummary
             if (invalidComments.length > 0) {
