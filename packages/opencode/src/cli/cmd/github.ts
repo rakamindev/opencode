@@ -28,6 +28,8 @@ import { MessageV2 } from "../../session/message-v2"
 import { SessionPrompt } from "@/session/prompt"
 import { $ } from "bun"
 import { ContextInjector, ReviewComment } from "../../context"
+import { generateObject } from "ai"
+import z from "zod"
 
 type GitHubAuthor = {
   login: string
@@ -1859,13 +1861,48 @@ Co-authored-by: ${actor} <${actor}@users.noreply.github.com>"`
 
         try {
           const jsonStr = jsonMatch[1] || jsonMatch[0]
-          const parsed = repairAndParseJson(jsonStr)
+          let parsed: any
+          let result: ReturnType<typeof ReviewComment.ReviewOutput.safeParse>
 
-          // Validate with our schema
-          const result = ReviewComment.ReviewOutput.safeParse(parsed)
+          // Phase 1: Try fast repair and parse
+          try {
+            parsed = repairAndParseJson(jsonStr)
+            result = ReviewComment.ReviewOutput.safeParse(parsed)
+          } catch (repairError) {
+            console.warn("Fast JSON repair failed, falling back to native structured output:", repairError)
+            result = { success: false, error: new z.ZodError([]) } as typeof result
+          }
+
+          // Phase 2: If repair failed, use Gemini's native structured output
+          if (!result.success) {
+            console.log("Attempting extraction via native structured output (generateObject)...")
+            try {
+              const model = await Provider.getModel(providerID, modelID)
+              const language = await Provider.getLanguage(model)
+
+              const structuredResult = await generateObject({
+                model: language,
+                schema: ReviewComment.ReviewOutput,
+                prompt: `Extract the structured review data from the following AI response. Return ONLY the JSON object matching the schema.\n\nAI Response:\n${response}`,
+                // Use Gemini's native JSON mode for bulletproof extraction
+                providerOptions: {
+                  google: {
+                    responseMimeType: 'application/json',
+                  },
+                },
+              })
+
+              parsed = structuredResult.object
+              result = ReviewComment.ReviewOutput.safeParse(parsed)
+            } catch (structuredError) {
+              console.error("Native structured output extraction failed:", structuredError)
+              await createComment(`${response}${fallbackFooter}`)
+              return false
+            }
+          }
 
           if (!result.success) {
-            console.warn("Invalid review output structure:", result.error.issues)
+            console.warn("Invalid review output structure after all attempts:", result.error.issues)
             await createComment(`${response}${fallbackFooter}`)
             return false
           }
