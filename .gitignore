@@ -24,3 +24,5 @@ target
 # Local dev files
 opencode-dev
 logs/
+code/
+pr_diff.txt

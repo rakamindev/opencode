@@ -27,6 +27,12 @@ import { Bus } from "../../bus"
 import { MessageV2 } from "../../session/message-v2"
 import { SessionPrompt } from "@/session/prompt"
 import { $ } from "bun"
+import { ContextInjector, ReviewComment } from "../../context"
+import { generateObject } from "ai"
+import z from "zod"
+import { repairAndParseJson } from "../../util/json-repair"
+import { parsePatchForValidLines } from "../../util/git-diff"
+import { renderReviewMarkdown, filterCommentsByDiff } from "../../util/github-review-logic"
 
 type GitHubAuthor = {
   login: string
@@ -176,16 +182,17 @@ export function extractResponseText(parts: MessageV2.Part[]): string | null {
   const toolParts = parts.filter((p) => p.type === "tool" && p.state.status === "completed")
   if (toolParts.length > 0) return null
 
-  // No usable parts - throw with debug info
-  const partTypes = parts.map((p) => p.type).join(", ") || "none"
-  throw new Error(`Failed to parse response. Part types found: [${partTypes}]`)
+  // Priority 4: Step parts or other unknown parts
+  // When Gemini 3.0+ uses tools or thinks, it may emit step-start/step-finish or other types.
+  // We return null to signal summary needed if there is no text.
+  return null
 }
 
 export const GithubCommand = cmd({
   command: "github",
   describe: "manage GitHub agent",
   builder: (yargs) => yargs.command(GithubInstallCommand).command(GithubRunCommand).demandCommand(),
-  async handler() {},
+  async handler() { },
 })
 
 export const GithubInstallCommand = cmd({
@@ -234,9 +241,14 @@ export const GithubInstallCommand = cmd({
                 `    1. Commit the \`${WORKFLOW_FILE}\` file and push`,
                 step2,
                 "",
-                "    3. Go to a GitHub issue and comment `/oc summarize` to see the agent in action",
+                "    3. Ensure your self-hosted runner has:",
+                "       - Bun installed (https://bun.sh)",
+                "       - Git installed",
+                "       - Network access to github.com",
                 "",
-                "   Learn more about the GitHub agent - https://opencode.ai/docs/github/#usage-examples",
+                "    4. Go to a GitHub issue or PR and comment `/oc` to see the agent in action",
+                "",
+                "   Note: This workflow uses rakamindev/opencode fork with self-hosted runners",
               ].join("\n"),
             )
           }
@@ -363,10 +375,9 @@ export const GithubInstallCommand = cmd({
           }
 
           async function addWorkflowFiles() {
-            const envStr =
-              provider === "amazon-bedrock"
-                ? ""
-                : `\n        env:${providers[provider].env.map((e) => `\n          ${e}: \${{ secrets.${e} }}`).join("")}`
+            const envSecrets = providers[provider].env
+              .map((e) => `          ${e}: \${{ secrets.${e} }}`)
+              .join("\n")
 
             await Bun.write(
               path.join(app.root, WORKFLOW_FILE),
@@ -385,20 +396,35 @@ jobs:
       startsWith(github.event.comment.body, '/oc') ||
       contains(github.event.comment.body, ' /opencode') ||
       startsWith(github.event.comment.body, '/opencode')
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     permissions:
       id-token: write
       contents: read
-      pull-requests: read
-      issues: read
+      pull-requests: write
+      issues: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Clone opencode
+        run: |
+          rm -rf /tmp/opencode
+          git clone --depth 1 https://github.com/rakamindev/opencode.git /tmp/opencode
+
+      - name: Install dependencies
+        working-directory: /tmp/opencode
+        run: bun install
+
       - name: Run opencode
-        uses: sst/opencode/github@latest${envStr}
-        with:
-          model: ${provider}/${model}`,
+        working-directory: \${{ github.workspace }}
+        env:
+          GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+          GITHUB_EVENT_NAME: \${{ github.event_name }}
+          GITHUB_EVENT_PATH: \${{ github.event_path }}
+          OPENCODE_MODEL: ${provider}/${model}
+${envSecrets}
+        run: bun run /tmp/opencode/packages/opencode/src/index.ts github run
+`,
             )
 
             prompts.log.success(`Added workflow file: "${WORKFLOW_FILE}"`)
@@ -464,8 +490,14 @@ export const GithubRunCommand = cmd({
         : context.eventName === "issue_comment" || context.eventName === "issues"
           ? (payload as IssueCommentEvent | IssuesEvent).issue.number
           : (payload as PullRequestEvent | PullRequestReviewCommentEvent).pull_request.number
-      const runUrl = `/${owner}/${repo}/actions/runs/${runId}`
+      const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${runId}`
       const shareBaseUrl = isMock ? "https://dev.opencode.ai" : "https://opencode.ai"
+
+      // Branch-aware strict review: only enforce concurrent rules on specified branches
+      const strictReviewBranches = (process.env["STRICT_REVIEW_BRANCHES"] || "")
+        .split(",")
+        .map((b) => b.trim().toLowerCase())
+        .filter(Boolean)
 
       let appToken: string
       let octoRest: Octokit
@@ -563,30 +595,40 @@ export const GithubRunCommand = cmd({
           if (prData.headRepository.nameWithOwner === prData.baseRepository.nameWithOwner) {
             await checkoutLocalBranch(prData)
             const head = (await $`git rev-parse HEAD`).stdout.toString().trim()
-            const dataPrompt = buildPromptDataForPR(prData)
+            const dataPrompt = await buildPromptDataForPR(prData)
             const response = await chat(`${userPrompt}\n\n${dataPrompt}`, promptFiles)
             const { dirty, uncommittedChanges } = await branchIsDirty(head)
             if (dirty) {
               const summary = await summarize(response)
               await pushToLocalBranch(summary, uncommittedChanges)
             }
-            const hasShared = prData.comments.nodes.some((c) => c.body.includes(`${shareBaseUrl}/s/${shareId}`))
-            await createComment(`${response}${footer({ image: !hasShared })}`)
+            const hasShared = prData.comments.nodes.some((c) => c.body.includes(`${shareBaseUrl} / s / ${shareId}`))
+            // Try to post inline review comments, fall back to regular comment
+            await parseAndPostInlineReview(
+              issueId!,
+              response,
+              footer({ image: !hasShared })
+            )
             await removeReaction(commentType)
           }
           // Fork PR
           else {
             await checkoutForkBranch(prData)
             const head = (await $`git rev-parse HEAD`).stdout.toString().trim()
-            const dataPrompt = buildPromptDataForPR(prData)
+            const dataPrompt = await buildPromptDataForPR(prData)
             const response = await chat(`${userPrompt}\n\n${dataPrompt}`, promptFiles)
             const { dirty, uncommittedChanges } = await branchIsDirty(head)
             if (dirty) {
               const summary = await summarize(response)
               await pushToForkBranch(summary, prData, uncommittedChanges)
             }
-            const hasShared = prData.comments.nodes.some((c) => c.body.includes(`${shareBaseUrl}/s/${shareId}`))
-            await createComment(`${response}${footer({ image: !hasShared })}`)
+            const hasShared = prData.comments.nodes.some((c) => c.body.includes(`${shareBaseUrl} / s / ${shareId}`))
+            // Try to post inline review comments, fall back to regular comment
+            await parseAndPostInlineReview(
+              issueId!,
+              response,
+              footer({ image: !hasShared })
+            )
             await removeReaction(commentType)
           }
         }
@@ -645,7 +687,7 @@ export const GithubRunCommand = cmd({
         const { providerID, modelID } = Provider.parseModel(value)
 
         if (!providerID.length || !modelID.length)
-          throw new Error(`Invalid model ${value}. Model must be in the format "provider/model".`)
+          throw new Error(`Invalid model ${value}.Model must be in the format "provider/model".`)
         return { providerID, modelID }
       }
 
@@ -660,7 +702,7 @@ export const GithubRunCommand = cmd({
         if (!value) return undefined
         if (value === "true") return true
         if (value === "false") return false
-        throw new Error(`Invalid share value: ${value}. Share must be a boolean.`)
+        throw new Error(`Invalid share value: ${value}.Share must be a boolean.`)
       }
 
       function normalizeUseGithubToken() {
@@ -668,7 +710,7 @@ export const GithubRunCommand = cmd({
         if (!value) return false
         if (value === "true") return true
         if (value === "false") return false
-        throw new Error(`Invalid use_github_token value: ${value}. Must be a boolean.`)
+        throw new Error(`Invalid use_github_token value: ${value}.Must be a boolean.`)
       }
 
       function normalizeOidcBaseUrl(): string {
@@ -703,6 +745,93 @@ export const GithubRunCommand = cmd({
           position: reviewPayload.comment.position,
           commitId: reviewPayload.comment.commit_id,
           originalCommitId: reviewPayload.comment.original_commit_id,
+          // Thread detection: if in_reply_to_id exists, this is a reply in a thread
+          inReplyToId: (reviewPayload.comment as any).in_reply_to_id as number | undefined,
+        }
+      }
+
+      /**
+       * Check if Phase 1 (clarifying questions) has already been asked for this PR
+       * OR if user has already used /oc! (direct review) - in either case, skip Phase 1
+       */
+      async function hasPhase1BeenAsked(): Promise<boolean> {
+        if (!issueId) return false
+
+        try {
+          // Fetch PR comments and reviews to check for previous engagement
+          const prData = await fetchPR()
+
+          // Patterns to detect:
+          // 1. Bot's Phase 1 questions were already asked
+          // 2. User already used /oc! (direct review) = review exists
+          const phase1Pattern = /🤔.*Before I review.*questions/i
+          const directReviewPattern = /\/(oc|opencode)!/i
+
+          // Check issue-style comments
+          const comments = prData.comments?.nodes || []
+          for (const comment of comments) {
+            if (comment.body) {
+              // Check if Phase 1 was asked (bot comment)
+              if (phase1Pattern.test(comment.body)) {
+                return true
+              }
+              // Check if user already used /oc! (user comment)
+              if (directReviewPattern.test(comment.body)) {
+                return true
+              }
+            }
+          }
+
+          // Check review comments
+          const reviews = prData.reviews?.nodes || []
+          for (const review of reviews) {
+            if (review.body && phase1Pattern.test(review.body)) {
+              return true
+            }
+          }
+
+          return false
+        } catch (e) {
+          console.warn("Failed to check Phase 1 status:", e)
+          return false
+        }
+      }
+
+      /**
+       * Get review strictness based on PR target branch.
+       * Returns whether concurrent rules should be blocking or info-only.
+       */
+      async function getReviewStrictness(): Promise<{
+        isStrict: boolean
+        targetBranch: string
+        message: string
+      }> {
+        if (!issueId) return { isStrict: false, targetBranch: "", message: "" }
+
+        try {
+          const prData = await fetchPR()
+          const targetBranch = prData.baseRefName?.toLowerCase() || ""
+
+          const isStrict = strictReviewBranches.length > 0 && strictReviewBranches.includes(targetBranch)
+
+          // Debug logging for branch-aware strict review
+          console.log("=== BRANCH-AWARE STRICT REVIEW DEBUG ===")
+          console.log(`STRICT_REVIEW_BRANCHES env: "${process.env["STRICT_REVIEW_BRANCHES"] || "(not set)"}"`)
+          console.log(`Parsed strict branches: [${strictReviewBranches.join(", ")}]`)
+          console.log(`PR target branch: "${prData.baseRefName}" (normalized: "${targetBranch}")`)
+          console.log(`Is strict review: ${isStrict}`)
+          console.log("=========================================")
+
+          const message = isStrict
+            ? `⚠️ This PR targets **${prData.baseRefName}** (protected branch). Concurrent implementation rules are ENFORCED.`
+            : strictReviewBranches.length > 0
+              ? `ℹ️ This PR targets **${prData.baseRefName}** (non-protected). Concurrent rules shown as INFO only.`
+              : ""
+
+          return { isStrict, targetBranch, message }
+        } catch (e) {
+          console.warn("Failed to get review strictness:", e)
+          return { isStrict: false, targetBranch: "", message: "" }
         }
       }
 
@@ -726,25 +855,333 @@ export const GithubRunCommand = cmd({
           .split(",")
           .map((m) => m.trim().toLowerCase())
           .filter(Boolean)
-        let prompt = (() => {
+        let prompt = await (async () => {
           if (!isCommentEvent) {
             return "Review this pull request"
           }
           const body = (payload as IssueCommentEvent | PullRequestReviewCommentEvent).comment.body.trim()
           const bodyLower = body.toLowerCase()
-          if (mentions.some((m) => bodyLower === m)) {
-            if (reviewContext) {
-              return `Review this code change and suggest improvements for the commented lines:\n\nFile: ${reviewContext.file}\nLines: ${reviewContext.line}\n\n${reviewContext.diffHunk}`
+          if (mentions.some((m) => bodyLower === m) || mentions.some((m) => bodyLower === m + "!")) {
+            // Check for direct review trigger (/oc! or /opencode!)
+            const isDirectReview = mentions.some((m) => bodyLower === m + "!" || bodyLower.startsWith(m + "!"))
+
+            if (isDirectReview) {
+              // /oc! → Skip Phase 1, go directly to focused review
+              return `[DIRECT_REVIEW] Review this pull request directly without asking clarifying questions. Provide your complete review now.`
             }
-            return "Summarize this thread"
+
+            // /oc → Phase 1: Ask clarifying questions first
+            return `[PHASE_1] Before reviewing this pull request, analyze the changes and ask 2-4 clarifying questions to understand the context and focus areas. DO NOT provide the actual review yet - just ask focused questions. Example format:
+
+🤔 **Before I review, a few questions:**
+
+**PR Type Detected:** [Type based on files changed]
+
+**I noticed:**
+- [Observation about what's in the PR]
+- [Observation about what seems missing]
+
+**Questions:**
+1. [Context question]
+2. [Focus question]
+
+Reply with \`/oc\` followed by your answers (e.g., "/oc 1. Yes 2. Models only"), or use \`/oc!\` to skip questions.`
           }
+
+          // Handle /oc with additional text (user answering questions or providing context)
           if (mentions.some((m) => bodyLower.includes(m))) {
-            if (reviewContext) {
-              return `${body}\n\nContext: You are reviewing a comment on file "${reviewContext.file}" at line ${reviewContext.line}.\n\nDiff context:\n${reviewContext.diffHunk}`
+            // Check for recheck/rereview trigger first
+            const isRecheckTrigger = /\/(oc|opencode)\s*(recheck|rereview|check\s*again)/i.test(body)
+            if (isRecheckTrigger) {
+              const userMessage = body.replace(/\/(oc|opencode)\s*(recheck|rereview|check\s*again)/gi, "").trim()
+              return `[RECHECK] User is requesting a re-review after fixing previous feedback.
+
+User's context: ${userMessage || "Fixed previous issues"}
+
+CRITICAL INSTRUCTIONS:
+1. You are a CODE REVIEWER, not a fixer. DO NOT attempt to apply code changes.
+2. DO NOT return file edits, string replacements, or code arrays.
+3. Output ONLY the review JSON format shown below.
+4. If you want to suggest code changes, use the "suggestion" field in comments.
+
+Output ONLY valid JSON. NO explanations. NO text before or after JSON.
+
+\`\`\`json
+{
+  "context_summary": "Re-review: [brief context of what was fixed]",
+  "summary": "1-2 sentence status of previous feedback resolution",
+  
+  "checklist": [
+    {
+      "item": "Previous issue name",
+      "passed": true,
+      "note": "✅ Resolved / ❌ Still open / ⏭️ Skipped (if fixed in another PR per context)"
+    }
+  ],
+  
+  "comments": [
+    {
+      "path": "src/path/to/file.js",
+      "start_line": 42,
+      "line": 55,
+      "body": "Issue description",
+      "severity": "error|warning|info|suggestion",
+      "suggestion": "// corrected code - will create committable suggestion"
+    }
+  ],
+  
+  "not_reviewed": [
+    {"item": "Item name", "reason": "Already addressed / Not in scope"}
+  ],
+  
+  "decision": "APPROVE|REQUEST_CHANGES",
+  "decision_reason": "All issues resolved / X issues remain"
+}
+\`\`\`
+
+RULES:
+- Output ONLY the JSON block, nothing else
+- Use "path" not "file" for file paths
+- Use "body" not "note" for comment text
+- Use "severity" for each comment (error/warning/info/suggestion)
+- If no inline comments needed, use empty array: "comments": []
+- Checklist items should track resolution of PREVIOUS issues
+- IMPORTANT: Only comment on lines that are ADDED or MODIFIED in the PR diff. Do NOT comment on unchanged lines far from the changes - those will be rejected by GitHub API.
+- CRITICAL: "suggestion" field must contain RAW CODE ONLY - NO markdown formatting, NO triple backticks, NO \`\`\`suggestion blocks. Just the plain replacement code.
+
+CONCURRENT IMPLEMENTATION RULES (model-migration-sync, controller-service, etc.):
+${await (async () => {
+                  const { isStrict, message } = await getReviewStrictness()
+                  if (isStrict) {
+                    return `- ${message}
+- ENFORCE these rules: Missing concurrent implementations should be marked as FAIL and decision should be REQUEST_CHANGES`
+                  } else {
+                    return `
+=== CRITICAL: NON-STRICT BRANCH - READ THIS FIRST ===
+${message || "No strict branches configured."}
+
+YOU MUST FOLLOW THESE RULES FOR THIS NON-PROTECTED BRANCH:
+1. Do NOT mark missing concurrent deps (models, hooks, associations, schema definitions) as FAIL
+2. If user says migrations/models/tests are in another PR, mark those checklist items as "passed": null (Skipped)
+3. THIS INCLUDES "Previous Feedback": If the fix for a previous issue is in a separate PR (per context), mark it as "passed": null (Skipped), NOT as "Still open" or "Fail".
+4. Schema definitions (static schema()), column definitions, and model internals are PART OF migrations - skip them too
+5. Focus ONLY on reviewing the actual code IN THIS PR
+6. Decision should be APPROVE if the code IN THIS PR is correct
+7. Do NOT use REQUEST_CHANGES for missing files or definitions outside this PR
+
+CORRECT OUTPUT FOR NON-STRICT BRANCH:
+- Checklist item for items in other PRs: {"item": "Criterion name", "passed": null, "note": "⏭️ Skipped - handled in separate PR per user context"}
+- Decision: "APPROVE" (assuming code in this PR is correct)
+- not_reviewed: List what was skipped and why
+=== END CRITICAL SECTION ===`
+                  }
+                })()}`
             }
-            return body
+
+            // Check for direct review trigger first (/oc! anywhere in text)
+            const isDirectReview = mentions.some((m) => bodyLower.includes(m + "!"))
+            if (isDirectReview) {
+              const userMessage = body.replace(/\/oc!?|\/opencode!?/gi, "").trim()
+              return `[DIRECT_REVIEW] Review this pull request directly without asking clarifying questions.
+User context: ${userMessage || "None provided"}
+
+CRITICAL: Output ONLY valid JSON. NO explanations. NO text before or after JSON.
+
+\`\`\`json
+{
+  "context_summary": "${userMessage || "Direct review requested"}",
+  "summary": "1-2 sentence summary of what this PR does",
+  
+  "checklist": [
+    {
+      "item": "Criterion name (generate based on PR type - models, migrations, services, etc.)",
+      "passed": true,
+      "note": "Why it passed/failed - be specific"
+    }
+  ],
+  
+  "comments": [
+    {
+      "path": "src/path/to/file.js",
+      "start_line": 42,
+      "line": 55,
+      "body": "Issue description",
+      "severity": "error|warning|info|suggestion",
+      "suggestion": "// corrected code - will create committable suggestion"
+    }
+  ],
+  
+  "general_observations": ["Any observations not tied to specific lines"],
+  
+  "not_reviewed": [
+    {"item": "Thing not reviewed", "reason": "Per user context / Not in diff"}
+  ],
+  
+  "decision": "APPROVE|REQUEST_CHANGES",
+  "decision_reason": "Why this decision"
+}
+\`\`\`
+
+CHECKLIST GENERATION RULES:
+- Generate 4-7 checklist items RELEVANT to this specific PR type
+- If PR adds models: check schema correctness, associations, naming conventions
+- If PR adds migrations: check column types, indexes, rollback safety
+- If PR adds services: check business logic separation, error handling
+- If PR adds controllers: check input validation, output formatting
+- Be CONTEXT-AWARE, not generic
+
+CONCURRENT IMPLEMENTATION RULES (model-migration-sync, controller-service, etc.):
+${await (async () => {
+                  const { isStrict, message } = await getReviewStrictness()
+                  if (isStrict) {
+                    return `- ${message}
+- ENFORCE these rules: Missing concurrent implementations should be marked as FAIL and decision should be REQUEST_CHANGES`
+                  } else {
+                    return `
+=== CRITICAL: NON-STRICT BRANCH - READ THIS FIRST ===
+${message || "No strict branches configured."}
+
+YOU MUST FOLLOW THESE RULES FOR THIS NON-PROTECTED BRANCH:
+1. Do NOT mark missing concurrent deps (models, hooks, associations, schema definitions) as FAIL
+2. If user says migrations/models/tests are in another PR, mark those checklist items as "passed": null (Skipped)
+3. THIS INCLUDES "Previous Feedback": If the fix for a previous issue is in a separate PR (per context), mark it as "passed": null (Skipped), NOT as "Still open" or "Fail".
+4. Schema definitions (static schema()), column definitions, and model internals are PART OF migrations - skip them too
+5. Focus ONLY on reviewing the actual code IN THIS PR
+6. Decision should be APPROVE if the code IN THIS PR is correct
+7. Do NOT use REQUEST_CHANGES for missing files or definitions outside this PR
+=== END CRITICAL SECTION ===`
+                  }
+                })()}`
+            }
+
+            const userMessage = body.replace(/\/oc!?|\/opencode!?/gi, "").trim()
+            const hasNumberedAnswers = /^\s*\d+[\.\)]\s*.+/m.test(userMessage)
+
+            // SMART THREAD DETECTION:
+            // If this is a threaded reply (in_reply_to_id exists), skip Phase 1
+            // and go directly to Phase 2 with focused context
+            const isThreadedReply = reviewContext?.inReplyToId !== undefined
+
+            // PHASE 1 ALREADY DONE:
+            // If Phase 1 questions were already asked, skip directly to Phase 2
+            const phase1AlreadyAsked = await hasPhase1BeenAsked()
+
+            if (isThreadedReply) {
+              // Threaded reply → Skip Phase 1, use thread context for focused response
+              return `[THREAD_REPLY] User is replying in a code review thread. Provide a focused response based on the thread context.
+
+User's reply: ${userMessage || "Acknowledged"}
+
+Thread context:
+- File: ${reviewContext?.file}
+- Line: ${reviewContext?.line}
+- Diff:
+${reviewContext?.diffHunk}
+
+Respond directly to the user's message. If they've acknowledged a fix, confirm and close the thread. If they have questions, answer concisely. If they disagree, discuss the trade-offs.
+
+Keep your response focused on this specific issue only. Do NOT ask Phase 1 questions.`
+            }
+
+            if (hasNumberedAnswers || phase1AlreadyAsked) {
+              // User is answering questions OR Phase 1 was already asked → Phase 2
+              return `[PHASE_2] ${hasNumberedAnswers ? "User has answered your clarifying questions." : "Phase 1 questions were already asked."} Now provide the focused review.
+
+User's context/answers:
+${userMessage}
+
+CRITICAL: Output ONLY valid JSON. NO explanations. NO text before or after JSON.
+
+\`\`\`json
+{
+  "context_summary": "Summarize user's context/focus from their message",
+  "summary": "1-2 sentence summary of what this PR does",
+  
+  "checklist": [
+    {
+      "item": "Criterion name (generate based on PR type - models, migrations, services, etc.)",
+      "passed": true,
+      "note": "Why it passed/failed - be specific"
+    }
+  ],
+  
+  "comments": [
+    {
+      "path": "src/path/to/file.js",
+      "start_line": 42,
+      "line": 55,
+      "body": "Issue description",
+      "severity": "error|warning|info|suggestion",
+      "suggestion": "// corrected code - will create committable suggestion"
+    }
+  ],
+  
+  "general_observations": ["Any observations not tied to specific lines"],
+  
+  "not_reviewed": [
+    {"item": "Thing not reviewed", "reason": "Per user context / Not in diff"}
+  ],
+  
+  "decision": "APPROVE|REQUEST_CHANGES",
+  "decision_reason": "Why this decision"
+}
+\`\`\`
+
+CHECKLIST GENERATION RULES:
+- Generate 4-7 checklist items RELEVANT to this specific PR type
+- If PR adds models: check schema correctness, associations, naming conventions
+- If PR adds migrations: check column types, indexes, rollback safety
+- If PR adds services: check business logic separation, error handling
+- If PR adds controllers: check input validation, output formatting
+- Be CONTEXT-AWARE based on user's answers, not generic
+- Mark items NOT reviewed (per user context) with "skipped" status and reason
+
+CONCURRENT IMPLEMENTATION RULES (model-migration-sync, controller-service, etc.):
+${await (async () => {
+                  const { isStrict, message } = await getReviewStrictness()
+                  if (isStrict) {
+                    return `- ${message}
+- ENFORCE these rules: Missing concurrent implementations should be marked as FAIL and decision should be REQUEST_CHANGES`
+                  } else {
+                    return `
+=== CRITICAL: NON-STRICT BRANCH - READ THIS FIRST ===
+${message || "No strict branches configured."}
+
+YOU MUST FOLLOW THESE RULES FOR THIS NON-PROTECTED BRANCH:
+1. Do NOT mark missing concurrent deps (models, hooks, associations, schema definitions) as FAIL
+2. If user says migrations/models/tests are in another PR, mark those checklist items as "passed": null (Skipped)
+3. THIS INCLUDES "Previous Feedback": If the fix for a previous issue is in a separate PR (per context), mark it as "passed": null (Skipped), NOT as "Still open" or "Fail".
+4. Schema definitions (static schema()), column definitions, and model internals are PART OF migrations - skip them too
+5. Focus ONLY on reviewing the actual code IN THIS PR
+6. Decision should be APPROVE if the code IN THIS PR is correct
+7. Do NOT use REQUEST_CHANGES for missing files or definitions outside this PR
+=== END CRITICAL SECTION ===`
+                  }
+                })()}`
+            }
+
+            // /oc or /oc <text> without numbered answers → Phase 1
+            return `[PHASE_1] Before reviewing this pull request, analyze the changes and ask 2-4 clarifying questions. DO NOT provide the actual review yet - just ask focused questions.
+
+User's additional context: ${userMessage || "None provided"}
+
+Example output format:
+
+🤔 **Before I review, a few questions:**
+
+**PR Type Detected:** [Type based on files changed]
+
+**I noticed:**
+- [Observation about what's in the PR]
+- [Observation about what seems missing]
+
+**Questions:**
+1. [Context question]
+2. [Focus question]
+
+Reply with \`/oc\` followed by your answers (e.g., "/oc 1. Yes 2. Models only"), or use \`/oc!\` to skip questions.`
           }
-          throw new Error(`Comments must mention ${mentions.map((m) => "`" + m + "`").join(" or ")}`)
+          throw new Error(`Comments must mention ${mentions.map((m) => "\`" + m + "\`").join(" or ")} (add \`!\` for direct review, e.g. \`/oc!\`)`)
         })()
 
         // Handle images
@@ -819,7 +1256,7 @@ export const GithubRunCommand = cmd({
 
         function printEvent(color: string, type: string, title: string) {
           UI.println(
-            color + `|`,
+            color + `| `,
             UI.Style.TEXT_NORMAL + UI.Style.TEXT_DIM + ` ${type.padEnd(7, " ")}`,
             "",
             UI.Style.TEXT_NORMAL + title,
@@ -858,7 +1295,7 @@ export const GithubRunCommand = cmd({
 
       async function summarize(response: string) {
         try {
-          return await chat(`Summarize the following in less than 40 characters:\n\n${response}`)
+          return await chat(`Summarize the following in less than 40 characters: \n\n${response}`)
         } catch (e) {
           const title = issueEvent
             ? issueEvent.issue.title
@@ -877,6 +1314,12 @@ export const GithubRunCommand = cmd({
             providerID,
             modelID,
           },
+          // REVIEW-ONLY MODE: Disable file editing tools
+          // AI can read files but cannot modify them - suggestions go in JSON output
+          tools: {
+            edit: false,
+            write: false,
+          },
           // agent is omitted - server will use default_agent from config or fall back to "build"
           parts: [
             {
@@ -889,7 +1332,7 @@ export const GithubRunCommand = cmd({
                 id: Identifier.ascending("part"),
                 type: "file" as const,
                 mime: f.mime,
-                url: `data:${f.mime};base64,${f.content}`,
+                url: `data: ${f.mime}; base64, ${f.content} `,
                 filename: f.filename,
                 source: {
                   type: "file" as const,
@@ -909,7 +1352,7 @@ export const GithubRunCommand = cmd({
         if (result.info.role === "assistant" && result.info.error) {
           console.error(result.info)
           throw new Error(
-            `${result.info.error.name}: ${"message" in result.info.error ? result.info.error.message : ""}`,
+            `${result.info.error.name}: ${"message" in result.info.error ? result.info.error.message : ""} `,
           )
         }
 
@@ -938,7 +1381,7 @@ export const GithubRunCommand = cmd({
         if (summary.info.role === "assistant" && summary.info.error) {
           console.error(summary.info)
           throw new Error(
-            `${summary.info.error.name}: ${"message" in summary.info.error ? summary.info.error.message : ""}`,
+            `${summary.info.error.name}: ${"message" in summary.info.error ? summary.info.error.message : ""} `,
           )
         }
 
@@ -956,7 +1399,7 @@ export const GithubRunCommand = cmd({
         } catch (error) {
           console.error("Failed to get OIDC token:", error)
           throw new Error(
-            "Could not fetch an OIDC token. Make sure to add `id-token: write` to your workflow permissions.",
+            "Could not fetch an OIDC token. Make sure to add `id - token: write` to your workflow permissions.",
           )
         }
       }
@@ -964,18 +1407,18 @@ export const GithubRunCommand = cmd({
       async function exchangeForAppToken(token: string) {
         const response = token.startsWith("github_pat_")
           ? await fetch(`${oidcBaseUrl}/exchange_github_app_token_with_pat`, {
-              method: "POST",
-              headers: {
-                Authorization: `Bearer ${token}`,
-              },
-              body: JSON.stringify({ owner, repo }),
-            })
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({ owner, repo }),
+          })
           : await fetch(`${oidcBaseUrl}/exchange_github_app_token`, {
-              method: "POST",
-              headers: {
-                Authorization: `Bearer ${token}`,
-              },
-            })
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          })
 
         if (!response.ok) {
           const responseJson = (await response.json()) as { error?: string }
@@ -1223,10 +1666,30 @@ Co-authored-by: ${actor} <${actor}@users.noreply.github.com>"`
       async function createComment(body: string) {
         // Only called for non-schedule events, so issueId is defined
         console.log("Creating comment...")
+
+        // If this is a reply to a review comment, use threaded reply
+        if (commentType === "pr_review" && triggerCommentId) {
+          return await createReviewCommentReply(body)
+        }
+
         return await octoRest.rest.issues.createComment({
           owner,
           repo,
           issue_number: issueId!,
+          body,
+        })
+      }
+
+      /**
+       * Reply to a specific review comment thread
+       */
+      async function createReviewCommentReply(body: string) {
+        console.log(`Replying to review comment ${triggerCommentId}...`)
+        return await octoRest.rest.pulls.createReplyForReviewComment({
+          owner,
+          repo,
+          pull_number: issueId!, // For PR events, issueId is the PR number
+          comment_id: triggerCommentId!,
           body,
         })
       }
@@ -1242,6 +1705,182 @@ Co-authored-by: ${actor} <${actor}@users.noreply.github.com>"`
           body,
         })
         return pr.data.number
+      }
+
+      /**
+       * Parse a Git patch string to extract valid line numbers from the NEW file side.
+       * These are the only lines where GitHub allows inline PR comments on the RIGHT side.
+       */
+
+
+      /**
+       * Create a pull request review with inline comments on specific lines
+       */
+      async function createPullRequestReview(
+        prNumber: number,
+        summary: string,
+        comments: Array<{
+          path: string
+          line: number
+          start_line?: number
+          side?: "LEFT" | "RIGHT"
+          body: string
+        }>
+      ) {
+        console.log(`Creating PR review with ${comments.length} inline comments...`)
+
+        // GitHub requires commit_id for review comments
+        const { data: pr } = await octoRest.rest.pulls.get({
+          owner,
+          repo,
+          pull_number: prNumber,
+        })
+        const commitId = pr.head.sha
+
+        try {
+          await octoRest.rest.pulls.createReview({
+            owner,
+            repo,
+            pull_number: prNumber,
+            commit_id: commitId,
+            event: "COMMENT",
+            body: summary,
+            comments: comments.map((c) => ({
+              path: c.path,
+              line: c.line,
+              ...(c.start_line ? { start_line: c.start_line } : {}),
+              side: c.side || "RIGHT",
+              body: c.body,
+            })),
+          })
+          console.log(`Review created with ${comments.length} inline comments`)
+        } catch (error: any) {
+          // If inline comments fail, fall back to regular comment
+          console.warn("Failed to create inline review, falling back to regular comment:", error.message)
+          await createComment(`${summary}\n\n---\n\n_Note: Could not post inline comments. Showing feedback here instead._\n\n${comments.map((c) => `**${c.path}:${c.line}**\n${c.body}`).join("\n\n")}`)
+        }
+      }
+
+      /**
+       * Robustly repairs and parses JSON from an LLM that might include:
+       * 1. Unescaped control characters like newlines inside strings
+       * 2. Hallucinated markdown blocks (```js) inside strings
+       * 3. Trailing commas
+       */
+
+
+      /**
+       * Parse LLM response for structured review output and post inline comments.
+       * Returns true if inline review was posted, false if it fell back to regular comment.
+       */
+      async function parseAndPostInlineReview(
+        prNumber: number,
+        response: string,
+        fallbackFooter: string
+      ): Promise<boolean> {
+        // Try to find JSON in the response
+        const jsonMatch = response.match(/```json\s*([\s\S]*?)\s*```/) ||
+          response.match(/\{[\s\S]*"summary"[\s\S]*"comments"[\s\S]*\}/)
+
+        if (!jsonMatch) {
+          console.log("No structured JSON found in response, using regular comment")
+          await createComment(`${response}${fallbackFooter}`)
+          return false
+        }
+
+        try {
+          const jsonStr = jsonMatch[1] || jsonMatch[0]
+          let parsed: any
+          let result: ReturnType<typeof ReviewComment.ReviewOutput.safeParse>
+
+          // Phase 1: Try fast repair and parse
+          try {
+            parsed = repairAndParseJson(jsonStr)
+            result = ReviewComment.ReviewOutput.safeParse(parsed)
+          } catch (repairError) {
+            console.warn("Fast JSON repair failed, falling back to native structured output:", repairError)
+            result = { success: false, error: new z.ZodError([]) } as typeof result
+          }
+
+          // Phase 2: If repair failed, use Gemini's native structured output
+          if (!result.success) {
+            console.log("Attempting extraction via native structured output (generateObject)...")
+            try {
+              const model = await Provider.getModel(providerID, modelID)
+              const language = await Provider.getLanguage(model)
+
+              const structuredResult = await generateObject({
+                model: language,
+                schema: ReviewComment.ReviewOutputRaw,
+                prompt: `Extract the structured review data from the following AI response. Return ONLY the JSON object matching the schema.\n\nAI Response:\n${response}`,
+                // Use Gemini's native JSON mode for bulletproof extraction
+                providerOptions: {
+                  google: {
+                    responseMimeType: 'application/json',
+                  },
+                },
+              })
+
+              // Use the full schema with transforms for final validation
+              parsed = structuredResult.object
+              result = ReviewComment.ReviewOutput.safeParse(parsed)
+            } catch (structuredError) {
+              console.error("Native structured output extraction failed:", structuredError)
+              await createComment(`${response}${fallbackFooter}`)
+              return false
+            }
+          }
+
+          if (!result.success) {
+            console.warn("Invalid review output structure after all attempts:", result.error.issues)
+            await createComment(`${response}${fallbackFooter}`)
+            return false
+          }
+
+          const reviewData = result.data
+
+          const fullSummary = renderReviewMarkdown(reviewData, { fallbackFooter })
+
+          if (reviewData.comments && reviewData.comments.length > 0) {
+            // Fetch changed files in PR
+            const { data: prFiles } = await octoRest.rest.pulls.listFiles({
+              owner,
+              repo,
+              pull_number: prNumber,
+              per_page: 100,
+            })
+
+            const { valid: validComments, invalid: invalidComments } = filterCommentsByDiff(
+              reviewData.comments,
+              prFiles
+            )
+
+            let summaryWithInvalid = fullSummary
+            if (invalidComments.length > 0) {
+              summaryWithInvalid = fullSummary + "\n\n**Additional notes (outside diff range):**\n" +
+                invalidComments.map((c) => `- **${c.path}:${c.line}** - ${c.body}`).join("\n")
+            }
+
+            if (validComments.length > 0) {
+              await createPullRequestReview(prNumber, summaryWithInvalid, validComments)
+              console.log(`Posted inline review with ${validComments.length} comments (${invalidComments.length} skipped)`)
+              return true
+            } else {
+              // All comments were for invalid paths, just post summary with notes
+              await createComment(summaryWithInvalid)
+              console.log(`No valid inline comments, posted summary with ${invalidComments.length} notes`)
+              return false
+            }
+          } else {
+            // No inline comments, just post summary
+            await createComment(fullSummary)
+            return false
+          }
+        } catch (e: any) {
+          console.warn("Failed to parse structured review:", e.message)
+          await createComment(`${response}${fallbackFooter}`)
+          return false
+        }
       }
 
       function footer(opts?: { image?: boolean }) {
@@ -1431,7 +2070,7 @@ query($owner: String!, $repo: String!, $number: Int!) {
         return pr
       }
 
-      function buildPromptDataForPR(pr: GitHubPullRequest) {
+      async function buildPromptDataForPR(pr: GitHubPullRequest) {
         // Only called for non-schedule events, so payload is defined
         const comments = (pr.comments?.nodes || [])
           .filter((c) => {
@@ -1449,6 +2088,15 @@ query($owner: String!, $repo: String!, $number: Int!) {
             ...(comments.length > 0 ? ["  - Comments:", ...comments] : []),
           ]
         })
+
+        // Inject context from repository based on changed files
+        const changedFilePaths = (pr.files.nodes || []).map((f) => f.path)
+        const contextResult = await ContextInjector.inject(changedFilePaths)
+        const contextPrompt = ContextInjector.buildPrompt(contextResult)
+
+        if (contextResult.matchedRules.length > 0) {
+          console.log(`Context injection: ${contextResult.summary}`)
+        }
 
         return [
           "<github_action_context>",
@@ -1476,6 +2124,9 @@ query($owner: String!, $repo: String!, $number: Int!) {
           ...(files.length > 0 ? ["<pull_request_changed_files>", ...files, "</pull_request_changed_files>"] : []),
           ...(reviewData.length > 0 ? ["<pull_request_reviews>", ...reviewData, "</pull_request_reviews>"] : []),
           "</pull_request>",
+          "",
+          // Inject repository context based on changed files
+          ...(contextPrompt ? [contextPrompt] : []),
         ].join("\n")
       }
 
