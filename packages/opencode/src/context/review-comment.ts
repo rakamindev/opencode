@@ -24,7 +24,7 @@ export namespace ReviewComment {
     body: z.string().describe("The comment text in markdown"),
 
     /** Optional code suggestion to replace the commented lines */
-    suggestion: z.string().optional().describe("Code suggestion to replace the commented lines"),
+    suggestion: z.string().optional().nullable().transform(v => v ?? undefined).describe("Code suggestion to replace the commented lines"),
 
     /** Severity of the issue */
     severity: z.enum(["error", "warning", "info", "suggestion"]).optional().default("info"),
