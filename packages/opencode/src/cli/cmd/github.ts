@@ -30,6 +30,8 @@ import { $ } from "bun"
 import { ContextInjector, ReviewComment } from "../../context"
 import { generateObject } from "ai"
 import z from "zod"
+import { repairAndParseJson } from "../../util/json-repair"
+import { parsePatchForValidLines } from "../../util/git-diff"
 
 type GitHubAuthor = {
   login: string
@@ -1708,34 +1710,7 @@ Co-authored-by: ${actor} <${actor}@users.noreply.github.com>"`
        * Parse a Git patch string to extract valid line numbers from the NEW file side.
        * These are the only lines where GitHub allows inline PR comments on the RIGHT side.
        */
-      function parsePatchForValidLines(patch: string): Set<number> {
-        const validLines = new Set<number>()
-        const lines = patch.split('\n')
-        let currentNewLine = 0
 
-        for (const line of lines) {
-          // Parse hunk header: @@ -oldStart,oldCount +newStart,newCount @@
-          const hunkMatch = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/)
-          if (hunkMatch) {
-            currentNewLine = parseInt(hunkMatch[1], 10)
-            continue
-          }
-
-          if (currentNewLine === 0) continue // Before first hunk
-
-          // Lines starting with '+' are additions (valid)
-          // Lines starting with ' ' are context (valid)
-          // Lines starting with '-' are deletions (not valid for RIGHT side comments)
-          if (line.startsWith('+') || line.startsWith(' ')) {
-            validLines.add(currentNewLine)
-            currentNewLine++
-          } else if (line.startsWith('-')) {
-            // Deletion - don't increment newLine counter
-          }
-        }
-
-        return validLines
-      }
 
       /**
        * Create a pull request review with inline comments on specific lines
@@ -1791,60 +1766,7 @@ Co-authored-by: ${actor} <${actor}@users.noreply.github.com>"`
        * 2. Hallucinated markdown blocks (```js) inside strings
        * 3. Trailing commas
        */
-      function repairAndParseJson(raw: string): any {
-        let text = raw.trim()
 
-        // Phase 1: Basic structural cleaning
-        // Normalize trailing commas in objects and arrays
-        text = text.replace(/,\s*([\]}])/g, '$1')
-
-        // Phase 2: Structural Character Walk
-        // We walk the string to correctly identify and escape content inside string literals
-        // without affecting the JSON structure itself.
-        let inString = false
-        let escaped = false
-        let repaired = ""
-
-        for (let i = 0; i < text.length; i++) {
-          const char = text[i]
-
-          if (char === '"' && !escaped) {
-            inString = !inString
-            repaired += char
-          } else if (inString) {
-            // Inside a string literal - escape or transform problematic chars
-            if (char === '\n') repaired += '\\n'
-            else if (char === '\r') repaired += '\\r'
-            else if (char === '\t') repaired += '\\t'
-            else if (char === '\\' && !escaped) {
-              escaped = true
-              repaired += char
-            } else {
-              repaired += char
-              escaped = false
-            }
-          } else {
-            repaired += char
-            escaped = false
-          }
-        }
-
-        // Phase 3: Content-specific repair (Triple Backticks)
-        // Now that we have valid JSON-escaped strings, we can specifically strip 
-        // markdown markers that AI hallucinates inside suggestion/body fields.
-        repaired = repaired
-          .replace(/```[a-z]*\\n?/gi, '') // Remove opening blocks (escaped)
-          .replace(/\\n?```/gi, '')       // Remove closing blocks (escaped)
-          .replace(/```[a-z]*\n?/gi, '')  // Remove opening blocks (raw)
-          .replace(/\n?```/gi, '')        // Remove closing blocks (raw)
-
-        try {
-          return JSON.parse(repaired)
-        } catch (e: any) {
-          console.error("JSON parse failed after repair. Repaired string:", repaired)
-          throw new Error(`JSON Repair failed: ${e.message}`)
-        }
-      }
 
       /**
        * Parse LLM response for structured review output and post inline comments.
