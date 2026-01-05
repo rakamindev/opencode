@@ -592,10 +592,12 @@ export const GithubRunCommand = cmd({
             const head = (await $`git rev-parse HEAD`).stdout.toString().trim()
             const dataPrompt = await buildPromptDataForPR(prData)
             const response = await chat(`${userPrompt}\n\n${dataPrompt}`, promptFiles)
-            const { dirty, uncommittedChanges } = await branchIsDirty(head)
+            // REVIEW-ONLY MODE: Do not push any changes made by AI
+            // If branch is dirty, just log a warning but don't commit
+            const { dirty } = await branchIsDirty(head)
             if (dirty) {
-              const summary = await summarize(response)
-              await pushToLocalBranch(summary, uncommittedChanges)
+              console.warn("⚠️ Branch is dirty after AI response - discarding changes (review-only mode)")
+              await $`git checkout -- .` // Discard any changes
             }
             const hasShared = prData.comments.nodes.some((c) => c.body.includes(`${shareBaseUrl} / s / ${shareId}`))
             // Try to post inline review comments, fall back to regular comment
@@ -612,10 +614,12 @@ export const GithubRunCommand = cmd({
             const head = (await $`git rev-parse HEAD`).stdout.toString().trim()
             const dataPrompt = await buildPromptDataForPR(prData)
             const response = await chat(`${userPrompt}\n\n${dataPrompt}`, promptFiles)
-            const { dirty, uncommittedChanges } = await branchIsDirty(head)
+            // REVIEW-ONLY MODE: Do not push any changes made by AI
+            // If branch is dirty, just log a warning but don't commit
+            const { dirty } = await branchIsDirty(head)
             if (dirty) {
-              const summary = await summarize(response)
-              await pushToForkBranch(summary, prData, uncommittedChanges)
+              console.warn("⚠️ Branch is dirty after AI response - discarding changes (review-only mode)")
+              await $`git checkout -- .` // Discard any changes
             }
             const hasShared = prData.comments.nodes.some((c) => c.body.includes(`${shareBaseUrl} / s / ${shareId}`))
             // Try to post inline review comments, fall back to regular comment
@@ -1301,6 +1305,12 @@ Reply with \`/oc\` followed by your answers (e.g., "/oc 1. Yes 2. Models only"),
           model: {
             providerID,
             modelID,
+          },
+          // REVIEW-ONLY MODE: Disable file editing tools
+          // AI can read files but cannot modify them - suggestions go in JSON output
+          tools: {
+            edit: false,
+            write: false,
           },
           // agent is omitted - server will use default_agent from config or fall back to "build"
           parts: [
