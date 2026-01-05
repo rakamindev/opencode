@@ -1311,6 +1311,12 @@ Reply with \`/oc\` followed by your answers (e.g., "/oc 1. Yes 2. Models only"),
             providerID,
             modelID,
           },
+          // REVIEW-ONLY MODE: Disable file editing tools
+          // AI can read files but cannot modify them - suggestions go in JSON output
+          tools: {
+            edit: false,
+            write: false,
+          },
           // agent is omitted - server will use default_agent from config or fall back to "build"
           parts: [
             {
