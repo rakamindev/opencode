@@ -114,5 +114,16 @@ const x = 1
       expect(result.comments[0].body).toContain("Multiligne")
       expect(result.comments[0].suggestion).toContain("console.log")
     })
+
+    test("handles already escaped backslashes", () => {
+      const input = '{"key": "a\\\\b"}'
+      const result = repairAndParseJson(input)
+      expect(result.key).toBe("a\\b")
+    })
+
+    test("throws on truly un-repairable JSON", () => {
+      const input = '{"key": "value" ... partially broken'
+      expect(() => repairAndParseJson(input)).toThrow("JSON Repair failed")
+    })
   })
 })
