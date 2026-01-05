@@ -45,7 +45,11 @@ export namespace ReviewComment {
     /** The criterion being checked */
     item: z.string().describe("The criterion being checked"),
     /** Whether it passed */
-    passed: z.boolean().nullable().describe("true=passed, false=failed, null=skipped"),
+    passed: z.preprocess(
+      // Coerce invalid values (like "warning") to null
+      (v) => (typeof v === 'boolean' ? v : null),
+      z.boolean().nullable()
+    ).describe("true=passed, false=failed, null=skipped"),
     /** Note explaining the result */
     note: z.string().describe("Why it passed/failed/skipped"),
   })
