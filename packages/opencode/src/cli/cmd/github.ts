@@ -1694,6 +1694,39 @@ Co-authored-by: ${actor} <${actor}@users.noreply.github.com>"`
       }
 
       /**
+       * Parse a Git patch string to extract valid line numbers from the NEW file side.
+       * These are the only lines where GitHub allows inline PR comments on the RIGHT side.
+       */
+      function parsePatchForValidLines(patch: string): Set<number> {
+        const validLines = new Set<number>()
+        const lines = patch.split('\n')
+        let currentNewLine = 0
+
+        for (const line of lines) {
+          // Parse hunk header: @@ -oldStart,oldCount +newStart,newCount @@
+          const hunkMatch = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/)
+          if (hunkMatch) {
+            currentNewLine = parseInt(hunkMatch[1], 10)
+            continue
+          }
+
+          if (currentNewLine === 0) continue // Before first hunk
+
+          // Lines starting with '+' are additions (valid)
+          // Lines starting with ' ' are context (valid)
+          // Lines starting with '-' are deletions (not valid for RIGHT side comments)
+          if (line.startsWith('+') || line.startsWith(' ')) {
+            validLines.add(currentNewLine)
+            currentNewLine++
+          } else if (line.startsWith('-')) {
+            // Deletion - don't increment newLine counter
+          }
+        }
+
+        return validLines
+      }
+
+      /**
        * Create a pull request review with inline comments on specific lines
        */
       async function createPullRequestReview(
@@ -1866,22 +1899,41 @@ Co-authored-by: ${actor} <${actor}@users.noreply.github.com>"`
               pull_number: prNumber,
               per_page: 100,
             })
-            const validPaths = new Set(prFiles.map((f) => f.filename))
+            // Build a map of valid paths and their line ranges from the diff
+            const validPathsWithLines = new Map<string, Set<number>>()
+            for (const file of prFiles) {
+              if (!file.patch) continue
+              const validLines = parsePatchForValidLines(file.patch)
+              validPathsWithLines.set(file.filename, validLines)
+            }
 
-            // Filter comments to only include valid paths
-            const validComments = formattedComments.filter((c) => {
-              if (validPaths.has(c.path)) {
-                return true
+            // Filter comments to only include valid paths AND lines in the diff
+            const validComments: typeof formattedComments = []
+            const invalidComments: typeof formattedComments = []
+
+            for (const comment of formattedComments) {
+              const validLines = validPathsWithLines.get(comment.path)
+              if (!validLines) {
+                console.warn(`Skipping comment: path "${comment.path}" not in PR diff`)
+                invalidComments.push(comment)
+                continue
               }
-              console.warn(`Skipping comment for invalid path: ${c.path} (not in PR diff)`)
-              return false
-            })
 
-            // If some comments were filtered, add them to the summary
-            const invalidComments = formattedComments.filter((c) => !validPaths.has(c.path))
+              // Check if the comment's line (or range) is in the diff
+              const lineInDiff = validLines.has(comment.line)
+              const startLineInDiff = comment.start_line ? validLines.has(comment.start_line) : true
+
+              if (lineInDiff && startLineInDiff) {
+                validComments.push(comment)
+              } else {
+                console.warn(`Skipping comment: line ${comment.start_line || comment.line}-${comment.line} not in diff for "${comment.path}"`)
+                invalidComments.push(comment)
+              }
+            }
+
             let summaryWithInvalid = fullSummary
             if (invalidComments.length > 0) {
-              summaryWithInvalid = fullSummary + "\n\n**Additional notes (files not in this PR):**\n" +
+              summaryWithInvalid = fullSummary + "\n\n**Additional notes (outside diff range):**\n" +
                 invalidComments.map((c) => `- **${c.path}:${c.line}** - ${c.body}`).join("\n")
             }
 
