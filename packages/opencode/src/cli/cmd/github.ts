@@ -955,17 +955,17 @@ ${await (async () => {
 ${message || "No strict branches configured."}
 
 YOU MUST FOLLOW THESE RULES FOR THIS NON-PROTECTED BRANCH:
-1. Do NOT mark missing concurrent deps (models, hooks, associations) as FAIL
-2. Use "passed": null with note "⏭️ Skipped - to be added in separate PR"
-3. Focus ONLY on reviewing the actual code IN THIS PR
-4. Decision should be APPROVE if the code IN THIS PR is correct
-5. Do NOT use REQUEST_CHANGES for missing files outside this PR
-6. Think: "Is the migration code correct?" not "Are all related files present?"
+1. Do NOT mark missing concurrent deps (models, hooks, associations, schema definitions) as FAIL
+2. If user says migrations/models/tests are in another PR, mark those checklist items as "passed": null (Skipped)
+3. Schema definitions (static schema()), column definitions, and model internals are PART OF migrations - skip them too
+4. Focus ONLY on reviewing the actual code IN THIS PR
+5. Decision should be APPROVE if the code IN THIS PR is correct
+6. Do NOT use REQUEST_CHANGES for missing files or definitions outside this PR
 
 CORRECT OUTPUT FOR NON-STRICT BRANCH:
-- Checklist item for missing models: {"item": "Model files", "passed": null, "note": "⏭️ Skipped - to be added in separate PR before merging to protected branch"}
-- Decision: "APPROVE" (assuming migration code is correct)
-- not_reviewed: "Models/hooks needed before merging to protected branch"
+- Checklist item for skipped items: {"item": "Schema definitions", "passed": null, "note": "⏭️ Skipped - handled in migration PR per user context"}
+- Decision: "APPROVE" (assuming code in this PR is correct)
+- not_reviewed: List what was skipped and why
 === END CRITICAL SECTION ===`
                   }
                 })()}`
@@ -1035,11 +1035,12 @@ ${await (async () => {
 ${message || "No strict branches configured."}
 
 YOU MUST FOLLOW THESE RULES FOR THIS NON-PROTECTED BRANCH:
-1. Do NOT mark missing concurrent deps (models, hooks, associations) as FAIL
-2. Use "passed": null with note "⏭️ Skipped - to be added in separate PR"
-3. Focus ONLY on reviewing the actual code IN THIS PR
-4. Decision should be APPROVE if the code IN THIS PR is correct
-5. Do NOT use REQUEST_CHANGES for missing files outside this PR
+1. Do NOT mark missing concurrent deps (models, hooks, associations, schema definitions) as FAIL
+2. If user says migrations/models/tests are in another PR, mark those checklist items as "passed": null (Skipped)
+3. Schema definitions (static schema()), column definitions, and model internals are PART OF migrations - skip them too
+4. Focus ONLY on reviewing the actual code IN THIS PR
+5. Decision should be APPROVE if the code IN THIS PR is correct
+6. Do NOT use REQUEST_CHANGES for missing files or definitions outside this PR
 === END CRITICAL SECTION ===`
                   }
                 })()}`
@@ -1139,11 +1140,12 @@ ${await (async () => {
 ${message || "No strict branches configured."}
 
 YOU MUST FOLLOW THESE RULES FOR THIS NON-PROTECTED BRANCH:
-1. Do NOT mark missing concurrent deps (models, hooks, associations) as FAIL
-2. Use "passed": null with note "⏭️ Skipped - to be added in separate PR"
-3. Focus ONLY on reviewing the actual code IN THIS PR
-4. Decision should be APPROVE if the code IN THIS PR is correct
-5. Do NOT use REQUEST_CHANGES for missing files outside this PR
+1. Do NOT mark missing concurrent deps (models, hooks, associations, schema definitions) as FAIL
+2. If user says migrations/models/tests are in another PR, mark those checklist items as "passed": null (Skipped)
+3. Schema definitions (static schema()), column definitions, and model internals are PART OF migrations - skip them too
+4. Focus ONLY on reviewing the actual code IN THIS PR
+5. Decision should be APPROVE if the code IN THIS PR is correct
+6. Do NOT use REQUEST_CHANGES for missing files or definitions outside this PR
 === END CRITICAL SECTION ===`
                   }
                 })()}`
