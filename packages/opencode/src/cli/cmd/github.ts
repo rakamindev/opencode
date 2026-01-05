@@ -1797,7 +1797,26 @@ Co-authored-by: ${actor} <${actor}@users.noreply.github.com>"`
         }
 
         try {
-          const jsonStr = jsonMatch[1] || jsonMatch[0]
+          let jsonStr = jsonMatch[1] || jsonMatch[0]
+
+          // Pre-parse sanitization: Strip markdown code blocks from ALL string fields
+          // AI sometimes embeds ```javascript blocks inside strings, breaking JSON.parse
+          // Regex: Match JSON string values (handling escaped chars properly)
+          jsonStr = jsonStr.replace(
+            /:\s*"((?:[^"\\]|\\.)*)"/g,
+            (match, content) => {
+              // Only process if contains markdown code blocks
+              if (!content.includes('```')) return match
+              // Remove markdown code blocks from the content
+              const cleaned = content
+                .replace(/```\w*\\n?/g, '')   // Remove opening ``` (with escaped newline)
+                .replace(/\\n?```/g, '')      // Remove closing ```
+                .replace(/```\w*\n?/g, '')    // Remove opening ``` (with actual newline)
+                .replace(/\n?```/g, '')       // Remove closing ```
+              return `: "${cleaned}"`
+            }
+          )
+
           const parsed = JSON.parse(jsonStr)
 
           // Validate with our schema
