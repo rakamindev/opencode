@@ -942,6 +942,7 @@ RULES:
 - If no inline comments needed, use empty array: "comments": []
 - Checklist items should track resolution of PREVIOUS issues
 - IMPORTANT: Only comment on lines that are ADDED or MODIFIED in the PR diff. Do NOT comment on unchanged lines far from the changes - those will be rejected by GitHub API.
+- CRITICAL: "suggestion" field must contain RAW CODE ONLY - NO markdown formatting, NO triple backticks, NO \`\`\`suggestion blocks. Just the plain replacement code.
 
 CONCURRENT IMPLEMENTATION RULES (model-migration-sync, controller-service, etc.):
 ${await (async () => {
