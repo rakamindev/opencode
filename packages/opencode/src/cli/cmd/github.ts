@@ -1778,6 +1778,67 @@ Co-authored-by: ${actor} <${actor}@users.noreply.github.com>"`
       }
 
       /**
+       * Robustly repairs and parses JSON from an LLM that might include:
+       * 1. Unescaped control characters like newlines inside strings
+       * 2. Hallucinated markdown blocks (```js) inside strings
+       * 3. Trailing commas
+       */
+      function repairAndParseJson(raw: string): any {
+        let text = raw.trim()
+
+        // Phase 1: Basic structural cleaning
+        // Normalize trailing commas in objects and arrays
+        text = text.replace(/,\s*([\]}])/g, '$1')
+
+        // Phase 2: Structural Character Walk
+        // We walk the string to correctly identify and escape content inside string literals
+        // without affecting the JSON structure itself.
+        let inString = false
+        let escaped = false
+        let repaired = ""
+
+        for (let i = 0; i < text.length; i++) {
+          const char = text[i]
+
+          if (char === '"' && !escaped) {
+            inString = !inString
+            repaired += char
+          } else if (inString) {
+            // Inside a string literal - escape or transform problematic chars
+            if (char === '\n') repaired += '\\n'
+            else if (char === '\r') repaired += '\\r'
+            else if (char === '\t') repaired += '\\t'
+            else if (char === '\\' && !escaped) {
+              escaped = true
+              repaired += char
+            } else {
+              repaired += char
+              escaped = false
+            }
+          } else {
+            repaired += char
+            escaped = false
+          }
+        }
+
+        // Phase 3: Content-specific repair (Triple Backticks)
+        // Now that we have valid JSON-escaped strings, we can specifically strip 
+        // markdown markers that AI hallucinates inside suggestion/body fields.
+        repaired = repaired
+          .replace(/```[a-z]*\\n?/gi, '') // Remove opening blocks (escaped)
+          .replace(/\\n?```/gi, '')       // Remove closing blocks (escaped)
+          .replace(/```[a-z]*\n?/gi, '')  // Remove opening blocks (raw)
+          .replace(/\n?```/gi, '')        // Remove closing blocks (raw)
+
+        try {
+          return JSON.parse(repaired)
+        } catch (e: any) {
+          console.error("JSON parse failed after repair. Repaired string:", repaired)
+          throw new Error(`JSON Repair failed: ${e.message}`)
+        }
+      }
+
+      /**
        * Parse LLM response for structured review output and post inline comments.
        * Returns true if inline review was posted, false if it fell back to regular comment.
        */
@@ -1797,27 +1858,8 @@ Co-authored-by: ${actor} <${actor}@users.noreply.github.com>"`
         }
 
         try {
-          let jsonStr = jsonMatch[1] || jsonMatch[0]
-
-          // Pre-parse sanitization: Strip markdown code blocks from ALL string fields
-          // AI sometimes embeds ```javascript blocks inside strings, breaking JSON.parse
-          // Regex: Match JSON string values (handling escaped chars properly)
-          jsonStr = jsonStr.replace(
-            /:\s*"((?:[^"\\]|\\.)*)"/g,
-            (match, content) => {
-              // Only process if contains markdown code blocks
-              if (!content.includes('```')) return match
-              // Remove markdown code blocks from the content
-              const cleaned = content
-                .replace(/```\w*\\n?/g, '')   // Remove opening ``` (with escaped newline)
-                .replace(/\\n?```/g, '')      // Remove closing ```
-                .replace(/```\w*\n?/g, '')    // Remove opening ``` (with actual newline)
-                .replace(/\n?```/g, '')       // Remove closing ```
-              return `: "${cleaned}"`
-            }
-          )
-
-          const parsed = JSON.parse(jsonStr)
+          const jsonStr = jsonMatch[1] || jsonMatch[0]
+          const parsed = repairAndParseJson(jsonStr)
 
           // Validate with our schema
           const result = ReviewComment.ReviewOutput.safeParse(parsed)
