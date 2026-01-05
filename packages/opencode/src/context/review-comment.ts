@@ -6,6 +6,20 @@ import z from "zod"
 export namespace ReviewComment {
   /**
    * A single inline comment on a specific line or range of lines
+   * RAW version for generateObject (no transforms/defaults)
+   */
+  export const InlineCommentRaw = z.object({
+    path: z.string().describe("The file path where the comment should be placed"),
+    start_line: z.number().optional().describe("Starting line for multi-line comment range"),
+    line: z.number().describe("The line number to comment on (end line for multi-line)"),
+    side: z.enum(["LEFT", "RIGHT"]).optional().describe("Which side of the diff to comment on"),
+    body: z.string().describe("The comment text in markdown"),
+    suggestion: z.string().optional().nullable().describe("Code suggestion to replace the commented lines"),
+    severity: z.enum(["error", "warning", "info", "suggestion"]).optional().describe("Severity of the issue"),
+  })
+
+  /**
+   * A single inline comment on a specific line or range of lines
    */
   export const InlineComment = z.object({
     /** File path relative to repository root */
@@ -40,6 +54,16 @@ export namespace ReviewComment {
 
   /**
    * A single checklist item for the review
+   * RAW version for generateObject (no preprocess)
+   */
+  export const ChecklistItemRaw = z.object({
+    item: z.string().describe("The criterion being checked"),
+    passed: z.boolean().nullable().describe("true=passed, false=failed, null=skipped"),
+    note: z.string().describe("Why it passed/failed/skipped"),
+  })
+
+  /**
+   * A single checklist item for the review
    */
   export const ChecklistItem = z.object({
     /** The criterion being checked */
@@ -65,6 +89,21 @@ export namespace ReviewComment {
     reason: z.string().describe("Why it was skipped (e.g., 'In PR #352')"),
   })
   export type NotReviewedItem = z.infer<typeof NotReviewedItem>
+
+  /**
+   * The full structured review output from the LLM
+   * RAW version for generateObject (no transforms/preprocess in nested schemas)
+   */
+  export const ReviewOutputRaw = z.object({
+    context_summary: z.string().optional().describe("Restated context from user's answers (e.g., 'Focusing on models only')"),
+    summary: z.string().describe("Overall summary of the code review"),
+    checklist: z.array(ChecklistItemRaw).optional().describe("Dynamic checklist based on PR type"),
+    comments: z.array(InlineCommentRaw).describe("List of inline comments on specific lines"),
+    general_observations: z.array(z.string()).optional().describe("General observations not tied to specific lines"),
+    not_reviewed: z.array(NotReviewedItem).optional().describe("Items explicitly not reviewed"),
+    decision: z.enum(["APPROVE", "REQUEST_CHANGES", "COMMENT"]).optional().describe("Review decision"),
+    decision_reason: z.string().optional().describe("Why this decision was made"),
+  })
 
   /**
    * The full structured review output from the LLM

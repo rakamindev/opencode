@@ -1888,7 +1888,7 @@ Co-authored-by: ${actor} <${actor}@users.noreply.github.com>"`
 
               const structuredResult = await generateObject({
                 model: language,
-                schema: ReviewComment.ReviewOutput,
+                schema: ReviewComment.ReviewOutputRaw,
                 prompt: `Extract the structured review data from the following AI response. Return ONLY the JSON object matching the schema.\n\nAI Response:\n${response}`,
                 // Use Gemini's native JSON mode for bulletproof extraction
                 providerOptions: {
@@ -1898,6 +1898,7 @@ Co-authored-by: ${actor} <${actor}@users.noreply.github.com>"`
                 },
               })
 
+              // Use the full schema with transforms for final validation
               parsed = structuredResult.object
               result = ReviewComment.ReviewOutput.safeParse(parsed)
             } catch (structuredError) {
