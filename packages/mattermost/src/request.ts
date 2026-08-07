@@ -15,6 +15,7 @@ export function parseSelfHealRequest(message: string, botUsername: string): Self
   if (!match) return
 
   const [, url, owner, repo, issueNumber] = match
+  if (!url || !owner || !repo || !issueNumber) return
   return { owner, repo, issueNumber: Number(issueNumber), url }
 }
 
