@@ -1,0 +1,16 @@
+{
+  "name": "@opencode-ai/mattermost",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run src/probe.ts",
+    "test": "bun test",
+    "typecheck": "tsgo --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "catalog:",
+    "@types/node": "catalog:",
+    "@typescript/native-preview": "catalog:",
+    "typescript": "catalog:"
+  }
+}

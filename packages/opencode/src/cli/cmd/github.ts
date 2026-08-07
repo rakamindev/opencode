@@ -445,6 +445,7 @@ export const GithubRunCommand = cmd({
       const { providerID, modelID } = normalizeModel()
       const runId = normalizeRunId()
       const share = normalizeShare()
+      const selfHealIssueNumber = normalizeSelfHealIssueNumber()
       const oidcBaseUrl = normalizeOidcBaseUrl()
       const { owner, repo } = context.repo
       // For repo events (schedule, workflow_dispatch), payload has no issue/comment data
@@ -534,7 +535,7 @@ export const GithubRunCommand = cmd({
           if (isWorkflowDispatchEvent && actor) {
             console.log(`Triggered by: ${actor}`)
           }
-          const branchPrefix = isWorkflowDispatchEvent ? "dispatch" : "schedule"
+          const branchPrefix = isWorkflowDispatchEvent ? (selfHealIssueNumber ? "self-heal" : "dispatch") : "schedule"
           const branch = await checkoutNewBranch(branchPrefix)
           const head = (await $`git rev-parse HEAD`).stdout.toString().trim()
           const response = await chat(userPrompt, promptFiles)
@@ -661,6 +662,15 @@ export const GithubRunCommand = cmd({
         if (value === "true") return true
         if (value === "false") return false
         throw new Error(`Invalid share value: ${value}. Share must be a boolean.`)
+      }
+
+      function normalizeSelfHealIssueNumber() {
+        const value = process.env["SELF_HEAL_ISSUE_NUMBER"]
+        if (!value) return
+        if (!/^[1-9]\d*$/.test(value)) {
+          throw new Error(`Invalid SELF_HEAL_ISSUE_NUMBER: ${value}. Must be a positive integer.`)
+        }
+        return value
       }
 
       function normalizeUseGithubToken() {
@@ -1011,7 +1021,7 @@ export const GithubRunCommand = cmd({
         await $`git config --local ${config} "${gitConfig}"`
       }
 
-      async function checkoutNewBranch(type: "issue" | "schedule" | "dispatch") {
+      async function checkoutNewBranch(type: "issue" | "schedule" | "dispatch" | "self-heal") {
         console.log("Checking out new branch...")
         const branch = generateBranchName(type)
         await $`git checkout -b ${branch}`
@@ -1040,7 +1050,11 @@ export const GithubRunCommand = cmd({
         await $`git checkout -b ${localBranch} fork/${remoteBranch}`
       }
 
-      function generateBranchName(type: "issue" | "pr" | "schedule" | "dispatch") {
+      function generateBranchName(type: "issue" | "pr" | "schedule" | "dispatch" | "self-heal") {
+        if (type === "self-heal") {
+          if (!selfHealIssueNumber) throw new Error("SELF_HEAL_ISSUE_NUMBER is required for self-heal branches")
+          return `self-heal/issue-${selfHealIssueNumber}`
+        }
         const timestamp = new Date()
           .toISOString()
           .replace(/[:-]/g, "")
